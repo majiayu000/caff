@@ -20,6 +20,13 @@ Caff keeps display sleep prevention opt-in and applies a visible safety policy b
 - long sessions are blocked while on battery unless the user explicitly enables them
 - assertion and policy failures stay visible in the menu bar, menu, and control window
 
+## Process Trigger
+
+Caff can watch a configurable comma-separated list of process names or bundle identifiers.
+The default list is `codex, claude, node, python, cargo, swift`.
+When a matching process exists, Caff starts a process-sourced keep-awake session and shows the triggering process in the status proof.
+When no match remains, Caff keeps the session alive for the configured grace period before stopping it.
+
 ## Run
 
 ```bash

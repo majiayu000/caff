@@ -14,14 +14,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let lidLimitLabel = NSTextField(labelWithString: "Lid close depends on macOS, power, and display setup.")
     private let displayAwakeCheckbox = NSButton(checkboxWithTitle: "Keep display awake", target: nil, action: nil)
     private let batteryPolicyCheckbox = NSButton(checkboxWithTitle: "Allow long sessions on battery", target: nil, action: nil)
+    private let processTriggerCheckbox = NSButton(checkboxWithTitle: "Auto-start for agent processes", target: nil, action: nil)
+    private let processIdentifiersField = NSTextField(
+        string: ProcessTriggerConfiguration.agentDefaults.identifiers.joined(separator: ", ")
+    )
+    private let processTriggerStatusLabel = NSTextField(labelWithString: "Process trigger idle")
     private let stopButton = NSButton(title: "Stop", target: nil, action: nil)
     private var startButtons: [NSButton] = []
     private var controlWindow: NSWindow?
     private var activeSession: WakeSession?
     private var lastErrorMessage: String?
     private var updateTimer: Timer?
+    private var processTriggerTimer: Timer?
+    private var processTriggerState = ProcessTriggerState.inactive
+    private var processTriggerSummary = "Process trigger idle"
     private var keepDisplayAwake = false
     private var allowLongSessionsOnBattery = false
+    private var processTriggerEnabled = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -33,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         updateTimer?.invalidate()
+        processTriggerTimer?.invalidate()
         do {
             try powerAssertions.stop()
         } catch {
@@ -95,6 +105,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateStatusTitle()
     }
 
+    @objc private func toggleProcessTrigger() {
+        processTriggerEnabled.toggle()
+        processTriggerState = .inactive
+        processTriggerSummary = processTriggerEnabled ? "Process trigger watching" : "Process trigger idle"
+
+        if processTriggerEnabled {
+            scheduleProcessTriggerTimer()
+            pollProcessTrigger()
+        } else {
+            processTriggerTimer?.invalidate()
+            processTriggerTimer = nil
+            if activeSession?.source == .process {
+                stopSession()
+            }
+        }
+
+        rebuildMenu()
+        updateStatusTitle()
+    }
+
+    @objc private func pollProcessTrigger() {
+        guard processTriggerEnabled else {
+            return
+        }
+
+        let evaluator = ProcessTriggerEvaluator(configuration: currentProcessTriggerConfiguration())
+        let (evaluation, nextState) = evaluator.evaluate(
+            candidates: ProcessListScanner.snapshot(),
+            previousState: processTriggerState
+        )
+        processTriggerState = nextState
+        processTriggerSummary = evaluation.summary
+
+        if evaluation.isKeepingAwake {
+            if activeSession == nil {
+                let started = startSession(
+                    duration: .indefinitely,
+                    source: .process,
+                    reason: evaluation.reason
+                )
+                if !started {
+                    processTriggerEnabled = false
+                    processTriggerTimer?.invalidate()
+                    processTriggerTimer = nil
+                }
+            }
+        } else if activeSession?.source == .process {
+            stopSession()
+        }
+
+        rebuildMenu()
+        updateStatusTitle()
+    }
+
     @objc private func quit() {
         NSApp.terminate(nil)
     }
@@ -117,11 +181,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateStatusTitle()
     }
 
-    private func startSession(duration: SessionDuration) {
+    @discardableResult
+    private func startSession(
+        duration: SessionDuration,
+        source: SessionSource = .manual,
+        reason: String = "Caff is keeping this Mac awake"
+    ) -> Bool {
         let startedAt = Date()
         let powerSource = PowerSourceMonitor.current()
         let safetyPolicy = currentSafetyPolicy()
-        let sessionOptions = options(for: duration)
+        let sessionOptions = options(for: duration, source: source, reason: reason)
 
         do {
             try safetyPolicy.validate(duration: duration, powerSource: powerSource)
@@ -136,8 +205,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             scheduleTimer()
             rebuildMenu()
             updateStatusTitle()
+            return true
         } catch {
             showError(error)
+            return false
         }
     }
 
@@ -153,8 +224,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func options(for duration: SessionDuration) -> SessionOptions {
-        SessionOptions(duration: duration, keepDisplayAwake: keepDisplayAwake)
+    private func options(
+        for duration: SessionDuration,
+        source: SessionSource = .manual,
+        reason: String = "Caff is keeping this Mac awake"
+    ) -> SessionOptions {
+        SessionOptions(
+            duration: duration,
+            source: source,
+            keepDisplayAwake: keepDisplayAwake,
+            reason: reason
+        )
     }
 
     private func options(for session: WakeSession) -> SessionOptions {
@@ -168,6 +248,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func currentSafetyPolicy() -> SafetyPolicy {
         SafetyPolicy(allowLongSessionsOnBattery: allowLongSessionsOnBattery)
+    }
+
+    private func currentProcessTriggerConfiguration() -> ProcessTriggerConfiguration {
+        let identifiers = processIdentifiersField.stringValue
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        return ProcessTriggerConfiguration(
+            identifiers: identifiers.isEmpty ? ProcessTriggerConfiguration.agentDefaults.identifiers : identifiers,
+            gracePeriodSeconds: currentSafetyPolicy().stopGracePeriodSeconds
+        )
     }
 
     private func enforceBatteryPolicy(_ activeSession: WakeSession) -> Bool {
@@ -212,6 +304,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             repeats: true
         )
         updateTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func scheduleProcessTriggerTimer() {
+        processTriggerTimer?.invalidate()
+        let timer = Timer(
+            timeInterval: 5,
+            target: self,
+            selector: #selector(pollProcessTrigger),
+            userInfo: nil,
+            repeats: true
+        )
+        processTriggerTimer = timer
         RunLoop.main.add(timer, forMode: .common)
     }
 
@@ -261,6 +366,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let batteryItem = menuItem("Allow Long Sessions on Battery", action: #selector(toggleBatteryPolicy))
         batteryItem.state = allowLongSessionsOnBattery ? .on : .off
         menu.addItem(batteryItem)
+        let processItem = menuItem("Auto Start for Agent Processes", action: #selector(toggleProcessTrigger))
+        processItem.state = processTriggerEnabled ? .on : .off
+        menu.addItem(processItem)
+        menu.addItem(disabledMenuItem(processTriggerSummary))
         menu.addItem(disabledMenuItem("Lid close depends on macOS power/display policy"))
 
         menu.addItem(.separator())
@@ -276,7 +385,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 430, height: 430),
+            contentRect: NSRect(x: 0, y: 0, width: 430, height: 520),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -330,6 +439,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         batteryPolicyCheckbox.target = self
         batteryPolicyCheckbox.action = #selector(toggleBatteryPolicy)
 
+        processTriggerCheckbox.target = self
+        processTriggerCheckbox.action = #selector(toggleProcessTrigger)
+        processIdentifiersField.placeholderString = "codex, claude, node, python, cargo, swift"
+        processIdentifiersField.font = .systemFont(ofSize: 12)
+        configureSecondaryLabel(processTriggerStatusLabel)
+
         stopButton.target = self
         stopButton.action = #selector(stopSessionFromMenu)
         stopButton.bezelStyle = .rounded
@@ -343,6 +458,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             startGrid,
             displayAwakeCheckbox,
             batteryPolicyCheckbox,
+            processTriggerCheckbox,
+            processIdentifiersField,
+            processTriggerStatusLabel,
             stopButton
         ])
         stack.orientation = .vertical
@@ -362,6 +480,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             policyStatusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
             lidLimitLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
             startGrid.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            processIdentifiersField.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            processTriggerStatusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
             stopButton.widthAnchor.constraint(equalTo: stack.widthAnchor)
         ])
 
@@ -404,6 +524,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         windowStatusLabel.stringValue = statusText
         displayAwakeCheckbox.state = keepDisplayAwake ? .on : .off
         batteryPolicyCheckbox.state = allowLongSessionsOnBattery ? .on : .off
+        processTriggerCheckbox.state = processTriggerEnabled ? .on : .off
+        processTriggerStatusLabel.stringValue = processTriggerSummary
         stopButton.isEnabled = isRunning
         for button in startButtons {
             button.isEnabled = !isRunning
