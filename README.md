@@ -46,6 +46,10 @@ History starts empty and can be cleared from the menu or control window.
 
 Caff persists menu bar density and launch behavior. The menu bar can show icon-only, `CAFF`, compact countdown, or source labels, and the control window can be disabled on launch.
 
+## Agent Launcher
+
+Caff can launch named commands from the control window and tie the wake assertion to the child process. Built-in examples include `codex`, `claude`, `npm test`, and `cargo test`; custom commands can define an executable, arguments, working directory, and environment assignments. When a launched process exits, Caff releases the assertion and records its exit status in local history.
+
 ## Run
 
 ```bash
