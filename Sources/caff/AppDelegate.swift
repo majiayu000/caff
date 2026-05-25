@@ -2,7 +2,7 @@ import AppKit
 import CaffCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let powerAssertions = PowerAssertionController()
     let agentRunner = AgentProcessRunner()
     let windowStatusLabel = NSTextField(labelWithString: "Off")
@@ -27,8 +27,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let historyStatusLabel = NSTextField(labelWithString: "History: Empty")
     let stopButton = NSButton(title: "Stop", target: nil, action: nil)
     let clearHistoryButton = NSButton(title: "Clear History", target: nil, action: nil)
-    private let historyStore = SessionHistoryStore()
-    private let notificationBridge = NotificationBridge()
+    let historyStore = SessionHistoryStore()
+    let notificationBridge = NotificationBridge()
     private let settingsStore = AppSettingsStore()
     let statusStore = CaffStatusStore()
     lazy var agentLauncherPanel = AgentLauncherPanel(
@@ -42,17 +42,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var activeSession: WakeSession?
     var releasedLauncherSession: WakeSession?
     var history: [SessionHistoryEntry] = []
-    private var settings = AppSettings.standard
+    var settings = AppSettings.standard
     var lastErrorMessage: String?
-    private var updateTimer: Timer?
-    private var processTriggerTimer: Timer?
-    private var workspaceTriggerTimer: Timer?
-    private var processTriggerState = ProcessTriggerState.inactive
-    private var workspaceTriggerState = WorkspaceTriggerState.inactive
-    private var processTriggerKeepingAwake = false
-    private var workspaceTriggerKeepingAwake = false
-    private var processTriggerReason = "Process trigger"
-    private var workspaceTriggerReason = "Workspace trigger"
+    var updateTimer: Timer?
+    var processTriggerTimer: Timer?
+    var workspaceTriggerTimer: Timer?
+    var processTriggerState = ProcessTriggerState.inactive
+    var workspaceTriggerState = WorkspaceTriggerState.inactive
+    var processTriggerKeepingAwake = false
+    var workspaceTriggerKeepingAwake = false
+    var processTriggerReason = "Process trigger"
+    var workspaceTriggerReason = "Workspace trigger"
     var processTriggerSummary = "Process trigger idle"
     var workspaceTriggerSummary = "Workspace trigger idle"
     var keepDisplayAwake = false
@@ -110,7 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stopCurrentSessionFromUI()
     }
 
-    @objc private func showControlWindow() {
+    @objc func showControlWindow() {
         let window = makeControlWindowIfNeeded()
         window.center()
         window.makeKeyAndOrderFront(nil)
@@ -145,46 +145,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateStatusTitle()
     }
 
-    @objc func toggleProcessTrigger() {
-        processTriggerEnabled.toggle()
-        processTriggerState = .inactive
-        processTriggerSummary = processTriggerEnabled ? "Process trigger watching" : "Process trigger idle"
-
-        if processTriggerEnabled {
-            scheduleProcessTriggerTimer()
-            pollProcessTrigger()
-        } else {
-            processTriggerTimer?.invalidate()
-            processTriggerTimer = nil
-            processTriggerKeepingAwake = false
-            processTriggerReason = "Process trigger"
-            syncAutomaticTriggerSession()
-        }
-
-        rebuildMenu()
-        updateStatusTitle()
-    }
-
-    @objc func toggleWorkspaceTrigger() {
-        workspaceTriggerEnabled.toggle()
-        workspaceTriggerState = .inactive
-        workspaceTriggerSummary = workspaceTriggerEnabled ? "Workspace trigger watching" : "Workspace trigger idle"
-
-        if workspaceTriggerEnabled {
-            scheduleWorkspaceTriggerTimer()
-            pollWorkspaceTrigger()
-        } else {
-            workspaceTriggerTimer?.invalidate()
-            workspaceTriggerTimer = nil
-            workspaceTriggerKeepingAwake = false
-            workspaceTriggerReason = "Workspace trigger"
-            syncAutomaticTriggerSession()
-        }
-
-        rebuildMenu()
-        updateStatusTitle()
-    }
-
     @objc func toggleNotifications() {
         notificationsEnabled.toggle()
         if notificationsEnabled {
@@ -201,65 +161,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateStatusTitle()
     }
 
-    @objc private func cycleMenuBarMode() {
+    @objc func cycleMenuBarMode() {
         settings.menuBarDisplayMode = settings.menuBarDisplayMode.next
         settingsStore.save(settings)
         rebuildMenu()
         updateStatusTitle()
     }
 
-    @objc private func toggleOpenWindowOnLaunch() {
+    @objc func toggleOpenWindowOnLaunch() {
         settings.openControlWindowOnLaunch.toggle()
         settingsStore.save(settings)
         rebuildMenu()
     }
 
-    @objc private func pollProcessTrigger() {
-        guard processTriggerEnabled else {
-            return
-        }
-
-        let evaluator = ProcessTriggerEvaluator(configuration: currentProcessTriggerConfiguration())
-        let (evaluation, nextState) = evaluator.evaluate(
-            candidates: ProcessListScanner.snapshot(),
-            previousState: processTriggerState
-        )
-        processTriggerState = nextState
-        processTriggerSummary = evaluation.summary
-        processTriggerKeepingAwake = evaluation.isKeepingAwake
-        processTriggerReason = evaluation.reason
-        syncAutomaticTriggerSession()
-
-        rebuildMenu()
-        updateStatusTitle()
-    }
-
-    @objc private func pollWorkspaceTrigger() {
-        guard workspaceTriggerEnabled else {
-            return
-        }
-
-        let configuration = currentWorkspaceTriggerConfiguration()
-        let evaluator = WorkspaceTriggerEvaluator(configuration: configuration)
-        let (evaluation, nextState) = evaluator.evaluate(
-            activities: WorkspaceActivityScanner.activities(configuration: configuration),
-            previousState: workspaceTriggerState
-        )
-        workspaceTriggerState = nextState
-        workspaceTriggerSummary = evaluation.summary
-        workspaceTriggerKeepingAwake = evaluation.isKeepingAwake
-        workspaceTriggerReason = evaluation.reason
-        syncAutomaticTriggerSession()
-
-        rebuildMenu()
-        updateStatusTitle()
-    }
-
-    @objc private func quit() {
+    @objc func quit() {
         NSApp.terminate(nil)
     }
 
-    @objc private func tick() {
+    @objc func tick() {
         guard let activeSession else {
             updateStatusTitle()
             return
@@ -363,91 +282,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         SafetyPolicy(allowLongSessionsOnBattery: allowLongSessionsOnBattery)
     }
 
-    private func currentProcessTriggerConfiguration() -> ProcessTriggerConfiguration {
-        let identifiers = processIdentifiersField.stringValue
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-
-        return ProcessTriggerConfiguration(
-            identifiers: identifiers.isEmpty ? ProcessTriggerConfiguration.agentDefaults.identifiers : identifiers,
-            gracePeriodSeconds: currentSafetyPolicy().stopGracePeriodSeconds
-        )
-    }
-
-    private func currentWorkspaceTriggerConfiguration() -> WorkspaceTriggerConfiguration {
-        let paths = workspacePathsField.stringValue
-            .split { character in
-                character == "," || character == "\n"
-            }
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-
-        return WorkspaceTriggerConfiguration(
-            paths: paths,
-            recentActivityWindowSeconds: 300,
-            gracePeriodSeconds: currentSafetyPolicy().stopGracePeriodSeconds
-        )
-    }
-
-    private func syncAutomaticTriggerSession() {
-        guard let desiredTrigger = desiredAutomaticTrigger() else {
-            if activeSession?.source == .process || activeSession?.source == .workspace {
-                stopSession(result: .stopped)
-            }
-            return
-        }
-
-        guard let activeSession else {
-            let started = startSession(
-                duration: .indefinitely,
-                source: desiredTrigger.source,
-                reason: desiredTrigger.reason
-            )
-            if !started {
-                disableFailedAutomaticTrigger(desiredTrigger.source)
-            }
-            return
-        }
-
-        guard activeSession.source == .process || activeSession.source == .workspace else {
-            return
-        }
-
-        if activeSession.source != desiredTrigger.source || activeSession.reason != desiredTrigger.reason {
-            self.activeSession = activeSession.updatingSource(desiredTrigger.source, reason: desiredTrigger.reason)
-        }
-    }
-
-    private func desiredAutomaticTrigger() -> (source: SessionSource, reason: String)? {
-        if workspaceTriggerEnabled, workspaceTriggerKeepingAwake {
-            return (.workspace, workspaceTriggerReason)
-        }
-
-        if processTriggerEnabled, processTriggerKeepingAwake {
-            return (.process, processTriggerReason)
-        }
-
-        return nil
-    }
-
-    private func disableFailedAutomaticTrigger(_ source: SessionSource) {
-        switch source {
-        case .process:
-            processTriggerEnabled = false
-            processTriggerKeepingAwake = false
-            processTriggerTimer?.invalidate()
-            processTriggerTimer = nil
-        case .workspace:
-            workspaceTriggerEnabled = false
-            workspaceTriggerKeepingAwake = false
-            workspaceTriggerTimer?.invalidate()
-            workspaceTriggerTimer = nil
-        case .manual, .launcher, .cli, .url:
-            break
-        }
-    }
-
     private func enforceBatteryPolicy(_ activeSession: WakeSession) -> Bool {
         do {
             try currentSafetyPolicy().validate(
@@ -484,187 +318,4 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showError(policyError)
     }
 
-    private func scheduleTimer() {
-        updateTimer?.invalidate()
-        let timer = Timer(
-            timeInterval: 1,
-            target: self,
-            selector: #selector(tick),
-            userInfo: nil,
-            repeats: true
-        )
-        updateTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
-    }
-
-    private func scheduleProcessTriggerTimer() {
-        processTriggerTimer?.invalidate()
-        let timer = Timer(
-            timeInterval: 5,
-            target: self,
-            selector: #selector(pollProcessTrigger),
-            userInfo: nil,
-            repeats: true
-        )
-        processTriggerTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
-    }
-
-    private func scheduleWorkspaceTriggerTimer() {
-        workspaceTriggerTimer?.invalidate()
-        let timer = Timer(
-            timeInterval: 15,
-            target: self,
-            selector: #selector(pollWorkspaceTrigger),
-            userInfo: nil,
-            repeats: true
-        )
-        workspaceTriggerTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
-    }
-
-    private func clearSessionState() {
-        activeSession = nil
-        updateTimer?.invalidate()
-        updateTimer = nil
-    }
-
-    func updateStatusTitle() {
-        statusItem.length = settings.menuBarDisplayMode == .iconOnly ? NSStatusItem.squareLength : NSStatusItem.variableLength
-        statusItem.button?.title = menuBarTitle()
-        updateControlWindow()
-        writeStatusSnapshot()
-    }
-
-    private func menuBarTitle() -> String {
-        if settings.menuBarDisplayMode == .iconOnly {
-            return "C"
-        }
-
-        guard let activeSession else {
-            return lastErrorMessage == nil ? "CAFF" : "CAFF !"
-        }
-
-        switch settings.menuBarDisplayMode {
-        case .iconOnly:
-            return "C"
-        case .title:
-            return "CAFF"
-        case .countdown:
-            return "CAFF \(activeSession.compactStatus())"
-        case .source:
-            return "CAFF \(activeSession.sourceLabel)"
-        }
-    }
-
-    func rebuildMenu() {
-        let menu = NSMenu()
-        if let activeSession {
-            menu.addItem(disabledMenuItem("Running: \(activeSession.sourceLabel) - \(activeSession.duration.label)"))
-            menu.addItem(disabledMenuItem("Assertions: \(activeSession.assertionSummary)"))
-            menu.addItem(disabledMenuItem("Reason: \(activeSession.reason)"))
-            menu.addItem(disabledMenuItem("Safety: \(safetyNotes(for: activeSession).joined(separator: ", "))"))
-            menu.addItem(menuItem("Stop", action: #selector(stopSessionFromMenu)))
-        } else {
-            if let lastErrorMessage {
-                menu.addItem(disabledMenuItem("Last error: \(lastErrorMessage)"))
-                menu.addItem(.separator())
-            }
-            menu.addItem(menuItem("Start Indefinitely", action: #selector(startIndefinitely)))
-            menu.addItem(menuItem("Start 30 Minutes", action: #selector(startThirtyMinutes)))
-            menu.addItem(menuItem("Start 1 Hour", action: #selector(startOneHour)))
-            menu.addItem(menuItem("Start 4 Hours", action: #selector(startFourHours)))
-        }
-        menu.addItem(.separator())
-        let displayItem = menuItem("Keep Display Awake", action: #selector(toggleDisplayAwake))
-        displayItem.state = keepDisplayAwake ? .on : .off
-        menu.addItem(displayItem)
-        let batteryItem = menuItem("Allow Long Sessions on Battery", action: #selector(toggleBatteryPolicy))
-        batteryItem.state = allowLongSessionsOnBattery ? .on : .off
-        menu.addItem(batteryItem)
-        let processItem = menuItem("Auto Start for Agent Processes", action: #selector(toggleProcessTrigger))
-        processItem.state = processTriggerEnabled ? .on : .off
-        menu.addItem(processItem)
-        menu.addItem(disabledMenuItem(processTriggerSummary))
-        let workspaceItem = menuItem("Auto Start for Workspace Activity", action: #selector(toggleWorkspaceTrigger))
-        workspaceItem.state = workspaceTriggerEnabled ? .on : .off
-        menu.addItem(workspaceItem)
-        menu.addItem(disabledMenuItem(workspaceTriggerSummary))
-        menu.addItem(disabledMenuItem("Lid close depends on macOS power/display policy"))
-        let notificationsItem = menuItem("Enable Notifications", action: #selector(toggleNotifications))
-        notificationsItem.state = notificationsEnabled ? .on : .off
-        menu.addItem(notificationsItem)
-        menu.addItem(menuItem("Menu Bar Mode: \(settings.menuBarDisplayMode.label)", action: #selector(cycleMenuBarMode)))
-        let launchWindowItem = menuItem("Show Window on Launch", action: #selector(toggleOpenWindowOnLaunch))
-        launchWindowItem.state = settings.openControlWindowOnLaunch ? .on : .off
-        menu.addItem(launchWindowItem)
-        menu.addItem(disabledMenuItem(historyMenuSummary()))
-        menu.addItem(menuItem("Clear History", action: #selector(clearHistory)))
-        menu.addItem(.separator())
-        menu.addItem(menuItem("Show Caff", action: #selector(showControlWindow)))
-        menu.addItem(menuItem("Quit Caff", action: #selector(quit), keyEquivalent: "q"))
-        statusItem.menu = menu
-    }
-
-    private func disabledMenuItem(_ title: String) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        item.isEnabled = false
-        return item
-    }
-
-    func recordHistory(
-        for session: WakeSession,
-        result: SessionHistoryResult,
-        errorMessage: String? = nil,
-        exitStatus: Int32? = nil,
-        terminationReason: String? = nil
-    ) {
-        let entry = SessionHistoryEntry(
-            session: session,
-            result: result,
-            errorMessage: errorMessage,
-            exitStatus: exitStatus,
-            terminationReason: terminationReason
-        )
-        history = historyStore.append(entry, to: history)
-    }
-
-    func historyMenuSummary() -> String {
-        guard let latest = history.first else {
-            return "History: Empty"
-        }
-
-        return "History: \(latest.summary)"
-    }
-
-    func sendNotification(title: String, body: String) {
-        guard notificationsEnabled else {
-            return
-        }
-
-        notificationBridge.send(title: title, body: body)
-    }
-
-    func writeStatusSnapshot() {
-        statusStore.write(CaffStatusSnapshot.snapshot(session: activeSession, errorMessage: lastErrorMessage))
-    }
-
-    private func menuItem(_ title: String, action: Selector?, keyEquivalent: String = "") -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
-        item.target = self
-        return item
-    }
-
-    func showError(_ error: Error) {
-        lastErrorMessage = String(describing: error)
-        sendNotification(title: "Caff error", body: lastErrorMessage ?? "Unknown error")
-        rebuildMenu()
-        updateStatusTitle()
-
-        let alert = NSAlert()
-        alert.alertStyle = .critical
-        alert.messageText = "Caff could not update the wake session"
-        alert.informativeText = lastErrorMessage ?? "Unknown error"
-        alert.runModal()
-    }
 }
