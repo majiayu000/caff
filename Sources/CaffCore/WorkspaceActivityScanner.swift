@@ -1,7 +1,6 @@
-import CaffCore
 import Foundation
 
-enum WorkspaceActivityScanner {
+public enum WorkspaceActivityScanner {
     private static let ignoredDirectoryNames: Set<String> = [
         ".build",
         ".git",
@@ -10,10 +9,10 @@ enum WorkspaceActivityScanner {
         "node_modules"
     ]
 
-    static func activities(configuration: WorkspaceTriggerConfiguration, now: Date = Date()) -> [WorkspaceActivity] {
+    public static func activities(configuration: WorkspaceTriggerConfiguration, now: Date = Date()) -> [WorkspaceActivity] {
         configuration.normalizedPaths.compactMap { rawPath in
             activity(
-                path: PathExpansion.expandTilde(rawPath),
+                path: (rawPath as NSString).expandingTildeInPath,
                 recentWindowSeconds: configuration.recentActivityWindowSeconds,
                 now: now
             )
@@ -54,14 +53,8 @@ enum WorkspaceActivityScanner {
 
         let cutoff = now.addingTimeInterval(-TimeInterval(recentWindowSeconds))
         var newest: (url: URL, modifiedAt: Date)?
-        var scanned = 0
 
         for case let fileURL as URL in enumerator {
-            scanned += 1
-            if scanned > 2_000 {
-                break
-            }
-
             if ignoredDirectoryNames.contains(fileURL.lastPathComponent) {
                 enumerator.skipDescendants()
                 continue
@@ -109,5 +102,4 @@ enum WorkspaceActivityScanner {
 
         return String(filePath.dropFirst(rootPath.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
-
 }

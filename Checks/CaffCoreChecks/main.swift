@@ -58,6 +58,10 @@ check(
     "session should expose stable assertion proof"
 )
 check(proofSession.compactStatus(now: now) == "1h", "session should expose compact remaining status")
+let workspaceProofSession = proofSession.updatingSource(.workspace, reason: "Workspace trigger: repo: recent file")
+check(workspaceProofSession.source == .workspace, "trigger sessions should update source without dropping proof")
+check(workspaceProofSession.reason == "Workspace trigger: repo: recent file", "trigger sessions should update reason without dropping proof")
+check(workspaceProofSession.activeAssertions == proofSession.activeAssertions, "trigger source updates should preserve assertions")
 
 let policy = SafetyPolicy.standard
 check(policy.maximumSessionMinutes == 240, "standard policy should cap sessions at four hours")
@@ -238,6 +242,50 @@ let (workspaceInactive, workspaceInactiveState) = workspaceTrigger.evaluate(
 )
 check(!workspaceInactive.isKeepingAwake, "workspace trigger should stop after grace expires")
 check(workspaceInactiveState == .inactive, "expired workspace trigger should reset state")
+
+do {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("caff-large-workspace-\(UUID().uuidString)", isDirectory: true)
+    let oldFilesURL = rootURL.appendingPathComponent("000-old", isDirectory: true)
+    let recentFilesURL = rootURL.appendingPathComponent("zzzz-late", isDirectory: true)
+    defer {
+        try? FileManager.default.removeItem(at: rootURL)
+    }
+
+    try FileManager.default.createDirectory(at: oldFilesURL, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: recentFilesURL, withIntermediateDirectories: true)
+
+    let oldDate = triggerStart.addingTimeInterval(-600)
+    for index in 0..<2_100 {
+        let fileURL = oldFilesURL.appendingPathComponent("file-\(index).txt")
+        try "old".write(to: fileURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: fileURL.path)
+    }
+
+    let recentURL = recentFilesURL.appendingPathComponent("recent.txt")
+    let recentDate = triggerStart.addingTimeInterval(-10)
+    try "recent".write(to: recentURL, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.modificationDate: recentDate], ofItemAtPath: recentURL.path)
+
+    let scanResult = WorkspaceActivityScanner.activities(
+        configuration: WorkspaceTriggerConfiguration(
+            paths: [rootURL.path],
+            recentActivityWindowSeconds: 300
+        ),
+        now: triggerStart
+    )
+
+    check(scanResult.count == 1, "workspace scanner should find recent activity after large directories")
+    if let first = scanResult.first,
+       case let .recentFile(relativePath, modifiedAt) = first.signal {
+        check(relativePath == "zzzz-late/recent.txt", "workspace scanner should report the newest late file")
+        check(modifiedAt == recentDate, "workspace scanner should preserve the recent modification date")
+    } else {
+        failures.append("workspace scanner should report recent file activity")
+    }
+} catch {
+    failures.append("workspace scanner large directory check failed: \(error)")
+}
 
 do {
     let controller = PowerAssertionController()

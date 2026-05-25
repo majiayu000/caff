@@ -49,6 +49,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var workspaceTriggerTimer: Timer?
     private var processTriggerState = ProcessTriggerState.inactive
     private var workspaceTriggerState = WorkspaceTriggerState.inactive
+    private var processTriggerKeepingAwake = false
+    private var workspaceTriggerKeepingAwake = false
+    private var processTriggerReason = "Process trigger"
+    private var workspaceTriggerReason = "Workspace trigger"
     var processTriggerSummary = "Process trigger idle"
     var workspaceTriggerSummary = "Workspace trigger idle"
     var keepDisplayAwake = false
@@ -152,9 +156,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             processTriggerTimer?.invalidate()
             processTriggerTimer = nil
-            if activeSession?.source == .process {
-                stopSession(result: .stopped)
-            }
+            processTriggerKeepingAwake = false
+            processTriggerReason = "Process trigger"
+            syncAutomaticTriggerSession()
         }
 
         rebuildMenu()
@@ -172,9 +176,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             workspaceTriggerTimer?.invalidate()
             workspaceTriggerTimer = nil
-            if activeSession?.source == .workspace {
-                stopSession(result: .stopped)
-            }
+            workspaceTriggerKeepingAwake = false
+            workspaceTriggerReason = "Workspace trigger"
+            syncAutomaticTriggerSession()
         }
 
         rebuildMenu()
@@ -222,23 +226,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         processTriggerState = nextState
         processTriggerSummary = evaluation.summary
-
-        if evaluation.isKeepingAwake {
-            if activeSession == nil {
-                let started = startSession(
-                    duration: .indefinitely,
-                    source: .process,
-                    reason: evaluation.reason
-                )
-                if !started {
-                    processTriggerEnabled = false
-                    processTriggerTimer?.invalidate()
-                    processTriggerTimer = nil
-                }
-            }
-        } else if activeSession?.source == .process {
-            stopSession(result: .stopped)
-        }
+        processTriggerKeepingAwake = evaluation.isKeepingAwake
+        processTriggerReason = evaluation.reason
+        syncAutomaticTriggerSession()
 
         rebuildMenu()
         updateStatusTitle()
@@ -257,23 +247,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         workspaceTriggerState = nextState
         workspaceTriggerSummary = evaluation.summary
-
-        if evaluation.isKeepingAwake {
-            if activeSession == nil {
-                let started = startSession(
-                    duration: .indefinitely,
-                    source: .workspace,
-                    reason: evaluation.reason
-                )
-                if !started {
-                    workspaceTriggerEnabled = false
-                    workspaceTriggerTimer?.invalidate()
-                    workspaceTriggerTimer = nil
-                }
-            }
-        } else if activeSession?.source == .workspace {
-            stopSession(result: .stopped)
-        }
+        workspaceTriggerKeepingAwake = evaluation.isKeepingAwake
+        workspaceTriggerReason = evaluation.reason
+        syncAutomaticTriggerSession()
 
         rebuildMenu()
         updateStatusTitle()
@@ -412,6 +388,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             recentActivityWindowSeconds: 300,
             gracePeriodSeconds: currentSafetyPolicy().stopGracePeriodSeconds
         )
+    }
+
+    private func syncAutomaticTriggerSession() {
+        guard let desiredTrigger = desiredAutomaticTrigger() else {
+            if activeSession?.source == .process || activeSession?.source == .workspace {
+                stopSession(result: .stopped)
+            }
+            return
+        }
+
+        guard let activeSession else {
+            let started = startSession(
+                duration: .indefinitely,
+                source: desiredTrigger.source,
+                reason: desiredTrigger.reason
+            )
+            if !started {
+                disableFailedAutomaticTrigger(desiredTrigger.source)
+            }
+            return
+        }
+
+        guard activeSession.source == .process || activeSession.source == .workspace else {
+            return
+        }
+
+        if activeSession.source != desiredTrigger.source || activeSession.reason != desiredTrigger.reason {
+            self.activeSession = activeSession.updatingSource(desiredTrigger.source, reason: desiredTrigger.reason)
+        }
+    }
+
+    private func desiredAutomaticTrigger() -> (source: SessionSource, reason: String)? {
+        if workspaceTriggerEnabled, workspaceTriggerKeepingAwake {
+            return (.workspace, workspaceTriggerReason)
+        }
+
+        if processTriggerEnabled, processTriggerKeepingAwake {
+            return (.process, processTriggerReason)
+        }
+
+        return nil
+    }
+
+    private func disableFailedAutomaticTrigger(_ source: SessionSource) {
+        switch source {
+        case .process:
+            processTriggerEnabled = false
+            processTriggerKeepingAwake = false
+            processTriggerTimer?.invalidate()
+            processTriggerTimer = nil
+        case .workspace:
+            workspaceTriggerEnabled = false
+            workspaceTriggerKeepingAwake = false
+            workspaceTriggerTimer?.invalidate()
+            workspaceTriggerTimer = nil
+        case .manual, .launcher, .cli, .url:
+            break
+        }
     }
 
     private func enforceBatteryPolicy(_ activeSession: WakeSession) -> Bool {

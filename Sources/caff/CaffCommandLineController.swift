@@ -101,20 +101,25 @@ final class CaffCommandLineController {
     }
 
     private func ensureAppRunning() throws {
-        if hasLiveStatus() || isBundledAppRunning() {
+        if waitForAppReadiness(timeout: 0.1) {
             return
         }
+
         if let appURL = currentAppBundleURL() {
             let configuration = NSWorkspace.OpenConfiguration()
             NSWorkspace.shared.openApplication(at: appURL, configuration: configuration)
-            Thread.sleep(forTimeInterval: 0.8)
+            guard waitForAppReadiness(timeout: 5) else {
+                throw CaffCommandLineError.cannotStartApp
+            }
             return
         }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executablePath())
         try process.run()
-        Thread.sleep(forTimeInterval: 0.8)
+        guard waitForAppReadiness(timeout: 5) else {
+            throw CaffCommandLineError.cannotStartApp
+        }
     }
 
     private func printStatus() throws {
@@ -131,9 +136,17 @@ final class CaffCommandLineController {
         return kill(status.appPID, 0) == 0
     }
 
-    private func isBundledAppRunning() -> Bool {
-        NSRunningApplication.runningApplications(withBundleIdentifier: RemoteCommandBridge.bundleIdentifier)
-            .contains { $0.processIdentifier != getpid() }
+    private func waitForAppReadiness(timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+
+        repeat {
+            if hasLiveStatus() {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        } while Date() < deadline
+
+        return false
     }
 
     private func currentAppBundleURL() -> URL? {

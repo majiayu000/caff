@@ -70,6 +70,19 @@ public struct WakeSession: Equatable, Sendable {
         )
     }
 
+    public func updatingSource(_ source: SessionSource, reason: String) -> WakeSession {
+        WakeSession(
+            source: source,
+            duration: duration,
+            startedAt: startedAt,
+            endDate: endDate,
+            keepDisplayAwake: keepDisplayAwake,
+            reason: reason,
+            activeAssertions: activeAssertions,
+            errorMessage: errorMessage
+        )
+    }
+
     public var sourceLabel: String {
         source.label
     }
