@@ -101,12 +101,13 @@ final class CaffCommandLineController {
     }
 
     private func ensureAppRunning() throws {
-        if waitForAppReadiness(timeout: 0.1) {
+        if waitForAppReadiness(timeout: 0.1) || isBundledAppRunning() {
             return
         }
 
         if let appURL = currentAppBundleURL() {
             let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = false
             NSWorkspace.shared.openApplication(at: appURL, configuration: configuration)
             guard waitForAppReadiness(timeout: 5) else {
                 throw CaffCommandLineError.cannotStartApp
@@ -147,6 +148,11 @@ final class CaffCommandLineController {
         } while Date() < deadline
 
         return false
+    }
+
+    private func isBundledAppRunning() -> Bool {
+        NSRunningApplication.runningApplications(withBundleIdentifier: RemoteCommandBridge.bundleIdentifier)
+            .contains { $0.processIdentifier != getpid() }
     }
 
     private func currentAppBundleURL() -> URL? {
