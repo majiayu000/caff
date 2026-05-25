@@ -182,6 +182,27 @@ do {
     failures.append("agent command parsing failed: \(error)")
 }
 
+do {
+    let remoteDuration = try RemoteControlParser.duration(minutes: "45")
+    let defaultRemoteDuration = try RemoteControlParser.duration(minutes: nil)
+    let urlRemoteSource = try RemoteControlParser.source("url")
+    check(remoteDuration.minutes == 45, "remote control should parse minute durations")
+    check(defaultRemoteDuration == .indefinitely, "remote control should default to indefinite duration")
+    check(urlRemoteSource == .url, "remote control should parse URL source")
+    check(RemoteControlParser.bool("true"), "remote control should parse true booleans")
+} catch {
+    failures.append("remote control parsing failed: \(error)")
+}
+
+do {
+    _ = try RemoteControlParser.duration(minutes: "0")
+    failures.append("remote control should reject invalid durations")
+} catch let error as RemoteControlError {
+    check(error == .invalidDuration("0"), "remote control should report invalid duration value")
+} catch {
+    failures.append("remote control duration rejected with unexpected error: \(error)")
+}
+
 let workspaceTriggerConfig = WorkspaceTriggerConfiguration(
     paths: ["/tmp/caff-workspace"],
     recentActivityWindowSeconds: 300,
