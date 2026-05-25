@@ -30,6 +30,10 @@ let package = Package(
             name: "CaffCoreChecks",
             dependencies: ["CaffCore"],
             path: "Checks/CaffCoreChecks"
+        ),
+        .testTarget(
+            name: "CaffCoreTests",
+            dependencies: ["CaffCore"]
         )
     ]
 )

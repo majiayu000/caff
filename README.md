@@ -89,6 +89,8 @@ The first agent-first trigger should reuse this proof model instead of adding a 
 ## Verify
 
 ```bash
-swift run caff-core-checks
+swift test
 swift build
+swift run caff-core-checks
+./scripts/build_app.sh
 ```

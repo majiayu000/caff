@@ -15,11 +15,15 @@ final class SessionHistoryStore {
     }
 
     func load() -> [SessionHistoryEntry] {
-        guard let data = try? Data(contentsOf: fileURL) else {
+        do {
+            let data = try Data(contentsOf: fileURL)
+            return try JSONDecoder().decode([SessionHistoryEntry].self, from: data)
+        } catch CocoaError.fileReadNoSuchFile {
+            return []
+        } catch {
+            fputs("Caff failed to load history: \(error)\n", stderr)
             return []
         }
-
-        return (try? JSONDecoder().decode([SessionHistoryEntry].self, from: data)) ?? []
     }
 
     func append(_ entry: SessionHistoryEntry, to entries: [SessionHistoryEntry]) -> [SessionHistoryEntry] {

@@ -58,10 +58,15 @@ final class CaffStatusStore {
     }
 
     func read() -> CaffStatusSnapshot? {
-        guard let data = try? Data(contentsOf: fileURL) else {
+        do {
+            let data = try Data(contentsOf: fileURL)
+            return try JSONDecoder().decode(CaffStatusSnapshot.self, from: data)
+        } catch CocoaError.fileReadNoSuchFile {
+            return nil
+        } catch {
+            fputs("Caff failed to read status: \(error)\n", stderr)
             return nil
         }
-        return try? JSONDecoder().decode(CaffStatusSnapshot.self, from: data)
     }
 
     func write(_ snapshot: CaffStatusSnapshot) {

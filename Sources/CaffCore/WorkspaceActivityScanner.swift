@@ -1,7 +1,6 @@
-import CaffCore
 import Foundation
 
-enum WorkspaceActivityScanner {
+public enum WorkspaceActivityScanner {
     private static let ignoredDirectoryNames: Set<String> = [
         ".build",
         ".git",
@@ -10,10 +9,10 @@ enum WorkspaceActivityScanner {
         "node_modules"
     ]
 
-    static func activities(configuration: WorkspaceTriggerConfiguration, now: Date = Date()) -> [WorkspaceActivity] {
+    public static func activities(configuration: WorkspaceTriggerConfiguration, now: Date = Date()) -> [WorkspaceActivity] {
         configuration.normalizedPaths.compactMap { rawPath in
             activity(
-                path: PathExpansion.expandTilde(rawPath),
+                path: (rawPath as NSString).expandingTildeInPath,
                 recentWindowSeconds: configuration.recentActivityWindowSeconds,
                 now: now
             )
@@ -49,25 +48,26 @@ enum WorkspaceActivityScanner {
             includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey, .isRegularFileKey],
             options: [.skipsHiddenFiles]
         ) else {
+            writeError("Caff could not enumerate workspace path: \(path)")
             return nil
         }
 
         let cutoff = now.addingTimeInterval(-TimeInterval(recentWindowSeconds))
         var newest: (url: URL, modifiedAt: Date)?
-        var scanned = 0
 
         for case let fileURL as URL in enumerator {
-            scanned += 1
-            if scanned > 2_000 {
-                break
-            }
-
             if ignoredDirectoryNames.contains(fileURL.lastPathComponent) {
                 enumerator.skipDescendants()
                 continue
             }
 
-            guard let values = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey, .isDirectoryKey, .isRegularFileKey]) else {
+            let values: URLResourceValues
+            do {
+                values = try fileURL.resourceValues(
+                    forKeys: [.contentModificationDateKey, .isDirectoryKey, .isRegularFileKey]
+                )
+            } catch {
+                writeError("Caff could not inspect workspace file \(fileURL.path): \(error)")
                 continue
             }
 
@@ -110,4 +110,7 @@ enum WorkspaceActivityScanner {
         return String(filePath.dropFirst(rootPath.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 
+    private static func writeError(_ message: String) {
+        FileHandle.standardError.write(Data("\(message)\n".utf8))
+    }
 }

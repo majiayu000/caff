@@ -45,19 +45,24 @@ final class AppSettingsStore {
     }
 
     func load() -> AppSettings {
-        guard let data = defaults.data(forKey: key),
-              let settings = try? JSONDecoder().decode(AppSettings.self, from: data) else {
+        guard let data = defaults.data(forKey: key) else {
             return .standard
         }
 
-        return settings
+        do {
+            return try JSONDecoder().decode(AppSettings.self, from: data)
+        } catch {
+            fputs("Caff failed to load app settings: \(error)\n", stderr)
+            return .standard
+        }
     }
 
     func save(_ settings: AppSettings) {
-        guard let data = try? JSONEncoder().encode(settings) else {
-            return
+        do {
+            let data = try JSONEncoder().encode(settings)
+            defaults.set(data, forKey: key)
+        } catch {
+            fputs("Caff failed to save app settings: \(error)\n", stderr)
         }
-
-        defaults.set(data, forKey: key)
     }
 }
