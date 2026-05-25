@@ -50,6 +50,10 @@ Caff persists menu bar density and launch behavior. The menu bar can show icon-o
 
 Caff can launch named commands from the control window and tie the wake assertion to the child process. Built-in examples include `codex`, `claude`, `npm test`, and `cargo test`; custom commands can define an executable, arguments, working directory, and environment assignments. When a launched process exits, Caff releases the assertion and records its exit status in local history.
 
+## CLI and URL Control
+
+The same executable accepts `start`, `stop`, and `status` commands. `start` supports `--minutes`, `--reason`, `--display-awake`, and `--source`; `status` prints proof fields including source, assertions, reason, timestamps, display-awake state, and errors. The app bundle registers `caff://start?...` and `caff://stop` for equivalent URL-driven control.
+
 ## Run
 
 ```bash

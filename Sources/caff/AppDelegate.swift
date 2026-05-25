@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let historyStore = SessionHistoryStore()
     private let notificationBridge = NotificationBridge()
     private let settingsStore = AppSettingsStore()
+    let statusStore = CaffStatusStore()
     lazy var agentLauncherPanel = AgentLauncherPanel(
         onLaunch: { [weak self] command in self?.launchAgentCommand(command) },
         onReleaseAssertion: { [weak self] in self?.releaseLauncherAssertionOnly() },
@@ -58,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        registerRemoteControlHandlers()
         settings = settingsStore.load()
         history = historyStore.load()
         statusItem.button?.title = "CAFF"
@@ -80,6 +82,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             fputs("Caff failed to release wake assertion on quit: \(error)\n", stderr)
         }
+        activeSession = nil
+        writeStatusSnapshot()
     }
 
     @objc func startIndefinitely() {
@@ -495,6 +499,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.length = settings.menuBarDisplayMode == .iconOnly ? NSStatusItem.squareLength : NSStatusItem.variableLength
         statusItem.button?.title = menuBarTitle()
         updateControlWindow()
+        writeStatusSnapshot()
     }
 
     private func menuBarTitle() -> String {
@@ -604,6 +609,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         notificationBridge.send(title: title, body: body)
+    }
+
+    func writeStatusSnapshot() {
+        statusStore.write(CaffStatusSnapshot.snapshot(session: activeSession, errorMessage: lastErrorMessage))
     }
 
     private func menuItem(_ title: String, action: Selector?, keyEquivalent: String = "") -> NSMenuItem {
