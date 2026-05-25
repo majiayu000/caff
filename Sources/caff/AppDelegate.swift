@@ -28,10 +28,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let clearHistoryButton = NSButton(title: "Clear History", target: nil, action: nil)
     private let historyStore = SessionHistoryStore()
     private let notificationBridge = NotificationBridge()
+    private let settingsStore = AppSettingsStore()
     private var startButtons: [NSButton] = []
     private var controlWindow: NSWindow?
     private var activeSession: WakeSession?
     private var history: [SessionHistoryEntry] = []
+    private var settings = AppSettings.standard
     private var lastErrorMessage: String?
     private var updateTimer: Timer?
     private var processTriggerTimer: Timer?
@@ -48,11 +50,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        settings = settingsStore.load()
         history = historyStore.load()
         statusItem.button?.title = "CAFF"
         rebuildMenu()
         updateStatusTitle()
-        showControlWindow()
+        if settings.openControlWindowOnLaunch {
+            showControlWindow()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -178,6 +183,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         historyStore.clear()
         rebuildMenu()
         updateStatusTitle()
+    }
+
+    @objc private func cycleMenuBarMode() {
+        settings.menuBarDisplayMode = settings.menuBarDisplayMode.next
+        settingsStore.save(settings)
+        rebuildMenu()
+        updateStatusTitle()
+    }
+
+    @objc private func toggleOpenWindowOnLaunch() {
+        settings.openControlWindowOnLaunch.toggle()
+        settingsStore.save(settings)
+        rebuildMenu()
     }
 
     @objc private func pollProcessTrigger() {
@@ -455,19 +473,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateStatusTitle() {
-        guard let activeSession else {
-            statusItem.button?.title = lastErrorMessage == nil ? "CAFF" : "CAFF !"
-            updateControlWindow()
-            return
+        statusItem.length = settings.menuBarDisplayMode == .iconOnly ? NSStatusItem.squareLength : NSStatusItem.variableLength
+        statusItem.button?.title = menuBarTitle()
+        updateControlWindow()
+    }
+
+    private func menuBarTitle() -> String {
+        if settings.menuBarDisplayMode == .iconOnly {
+            return "C"
         }
 
-        statusItem.button?.title = "CAFF \(activeSession.compactStatus())"
-        updateControlWindow()
+        guard let activeSession else {
+            return lastErrorMessage == nil ? "CAFF" : "CAFF !"
+        }
+
+        switch settings.menuBarDisplayMode {
+        case .iconOnly:
+            return "C"
+        case .title:
+            return "CAFF"
+        case .countdown:
+            return "CAFF \(activeSession.compactStatus())"
+        case .source:
+            return "CAFF \(activeSession.sourceLabel)"
+        }
     }
 
     private func rebuildMenu() {
         let menu = NSMenu()
-
         if let activeSession {
             menu.addItem(disabledMenuItem("Running: \(activeSession.sourceLabel) - \(activeSession.duration.label)"))
             menu.addItem(disabledMenuItem("Assertions: \(activeSession.assertionSummary)"))
@@ -484,13 +517,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(menuItem("Start 1 Hour", action: #selector(startOneHour)))
             menu.addItem(menuItem("Start 4 Hours", action: #selector(startFourHours)))
         }
-
         menu.addItem(.separator())
-
         let displayItem = menuItem("Keep Display Awake", action: #selector(toggleDisplayAwake))
         displayItem.state = keepDisplayAwake ? .on : .off
         menu.addItem(displayItem)
-
         let batteryItem = menuItem("Allow Long Sessions on Battery", action: #selector(toggleBatteryPolicy))
         batteryItem.state = allowLongSessionsOnBattery ? .on : .off
         menu.addItem(batteryItem)
@@ -501,19 +531,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let workspaceItem = menuItem("Auto Start for Workspace Activity", action: #selector(toggleWorkspaceTrigger))
         workspaceItem.state = workspaceTriggerEnabled ? .on : .off
         menu.addItem(workspaceItem)
-            menu.addItem(disabledMenuItem(workspaceTriggerSummary))
+        menu.addItem(disabledMenuItem(workspaceTriggerSummary))
         menu.addItem(disabledMenuItem("Lid close depends on macOS power/display policy"))
-
         let notificationsItem = menuItem("Enable Notifications", action: #selector(toggleNotifications))
         notificationsItem.state = notificationsEnabled ? .on : .off
         menu.addItem(notificationsItem)
+        menu.addItem(menuItem("Menu Bar Mode: \(settings.menuBarDisplayMode.label)", action: #selector(cycleMenuBarMode)))
+        let launchWindowItem = menuItem("Show Window on Launch", action: #selector(toggleOpenWindowOnLaunch))
+        launchWindowItem.state = settings.openControlWindowOnLaunch ? .on : .off
+        menu.addItem(launchWindowItem)
         menu.addItem(disabledMenuItem(historyMenuSummary()))
         menu.addItem(menuItem("Clear History", action: #selector(clearHistory)))
-
         menu.addItem(.separator())
         menu.addItem(menuItem("Show Caff", action: #selector(showControlWindow)))
         menu.addItem(menuItem("Quit Caff", action: #selector(quit), keyEquivalent: "q"))
-
         statusItem.menu = menu
     }
 
@@ -521,7 +552,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let controlWindow {
             return controlWindow
         }
-
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 450, height: 700),
             styleMask: [.titled, .closable, .miniaturizable],
@@ -530,14 +560,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         window.title = "Caff"
         window.isReleasedWhenClosed = false
-
         let titleLabel = NSTextField(labelWithString: "Caff")
         titleLabel.font = .boldSystemFont(ofSize: 24)
         titleLabel.alignment = .center
-
         windowStatusLabel.font = .systemFont(ofSize: 15, weight: .medium)
         windowStatusLabel.alignment = .center
-
         let proofStack = NSStackView(views: [
             sourceProofLabel,
             assertionProofLabel,
