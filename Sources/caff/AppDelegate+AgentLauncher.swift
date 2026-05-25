@@ -40,6 +40,9 @@ extension AppDelegate {
         if activeSession?.source == .launcher, agentRunner.isRunning {
             promptLauncherStopChoice()
         } else {
+            if activeSession?.source == .agent {
+                cancelAgentActivityCooldown()
+            }
             stopSession(result: .stopped)
         }
     }

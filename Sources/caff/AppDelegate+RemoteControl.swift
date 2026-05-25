@@ -69,6 +69,8 @@ extension AppDelegate {
             try startRemoteSession(userInfo: userInfo)
         case "stop":
             stopSession(result: .stopped)
+        case "agent-touch":
+            try touchRemoteAgentActivity(userInfo: userInfo)
         default:
             throw RemoteCommandApplyError.unknownAction(action)
         }
@@ -83,6 +85,14 @@ extension AppDelegate {
         keepDisplayAwake = RemoteControlParser.bool(userInfo[RemoteCommandBridge.Key.displayAwake])
         let reason = userInfo[RemoteCommandBridge.Key.reason] ?? "Caff remote start"
         _ = startSession(duration: duration, source: source, reason: reason)
+    }
+
+    private func touchRemoteAgentActivity(userInfo: [String: String]) throws {
+        let source = userInfo[RemoteCommandBridge.Key.agentSource] ?? userInfo[RemoteCommandBridge.Key.source]
+        let cooldownSeconds = try RemoteControlParser.cooldownSeconds(
+            userInfo[RemoteCommandBridge.Key.cooldownSeconds]
+        )
+        touchAgentActivity(source: source, cooldownSeconds: cooldownSeconds)
     }
 
     private func userInfo(from url: URL) -> [String: String]? {

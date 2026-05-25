@@ -10,10 +10,17 @@ struct CaffStatusSnapshot: Codable, Equatable {
     let startedAt: Date?
     let endDate: Date?
     let keepDisplayAwake: Bool
+    let agentActivity: String?
+    let agentCooldownUntil: Date?
     let errorMessage: String?
     let updatedAt: Date
 
-    static func snapshot(session: WakeSession?, errorMessage: String?) -> CaffStatusSnapshot {
+    static func snapshot(
+        session: WakeSession?,
+        errorMessage: String?,
+        agentActivity: String? = nil,
+        agentCooldownUntil: Date? = nil
+    ) -> CaffStatusSnapshot {
         CaffStatusSnapshot(
             appPID: getpid(),
             isRunning: session != nil,
@@ -23,6 +30,8 @@ struct CaffStatusSnapshot: Codable, Equatable {
             startedAt: session?.startedAt,
             endDate: session?.endDate,
             keepDisplayAwake: session?.keepDisplayAwake ?? false,
+            agentActivity: agentActivity,
+            agentCooldownUntil: agentCooldownUntil,
             errorMessage: errorMessage,
             updatedAt: Date()
         )
@@ -37,6 +46,8 @@ struct CaffStatusSnapshot: Codable, Equatable {
             "startedAt: \(startedAt.map(Self.formatISODate) ?? "none")",
             "endDate: \(endDate.map(Self.formatISODate) ?? "none")",
             "displayAwake: \(keepDisplayAwake)",
+            "agentActivity: \(agentActivity ?? "none")",
+            "agentCooldownUntil: \(agentCooldownUntil.map(Self.formatISODate) ?? "none")",
             "error: \(errorMessage ?? "none")"
         ].joined(separator: "\n")
     }

@@ -4,6 +4,7 @@ public enum SessionSource: String, CaseIterable, Sendable {
     case manual
     case process
     case workspace
+    case agent
     case launcher
     case cli
     case url
@@ -16,6 +17,8 @@ public enum SessionSource: String, CaseIterable, Sendable {
             return "Process"
         case .workspace:
             return "Workspace"
+        case .agent:
+            return "Agent"
         case .launcher:
             return "Launcher"
         case .cli:

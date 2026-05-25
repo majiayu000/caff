@@ -73,6 +73,7 @@ final class AgentLauncherPanel: NSObject {
         commandPopup.action = #selector(selectCommand)
         for field in [nameField, executableField, argumentsField, workingDirectoryField, environmentField] {
             field.font = .systemFont(ofSize: 12)
+            field.controlSize = .small
         }
         nameField.placeholderString = "Name"
         executableField.placeholderString = "Executable, e.g. codex"
@@ -80,6 +81,7 @@ final class AgentLauncherPanel: NSObject {
         workingDirectoryField.placeholderString = "~/Desktop/code/project"
         environmentField.placeholderString = "KEY=value, OTHER=value"
         AppLabelStyle.configureSecondary(statusLabel)
+        commandPopup.controlSize = .small
         launchButton.target = self
         launchButton.action = #selector(launchSelectedCommand)
         releaseButton.target = self
@@ -88,26 +90,87 @@ final class AgentLauncherPanel: NSObject {
         terminateButton.action = #selector(terminateCommand)
         for button in [launchButton, releaseButton, terminateButton] {
             button.bezelStyle = .rounded
+            button.controlSize = .small
         }
+        launchButton.keyEquivalent = "\r"
+        launchButton.bezelColor = CaffPanelStyle.accent
+        launchButton.contentTintColor = .white
 
-        view.setViews([
-            commandPopup,
-            nameField,
-            executableField,
-            argumentsField,
-            workingDirectoryField,
-            environmentField,
-            launchButton,
-            releaseButton,
-            terminateButton,
-            statusLabel
-        ], in: .top)
+        statusLabel.alignment = .left
+
+        let formRows = [
+            formRow("Preset", control: commandPopup),
+            formRow("Name", control: nameField),
+            formRow("Executable", control: executableField),
+            formRow("Arguments", control: argumentsField),
+            formRow("Directory", control: workingDirectoryField),
+            formRow("Env", control: environmentField)
+        ]
+        let form = NSStackView(views: formRows)
+        form.orientation = .vertical
+        form.alignment = .width
+        form.spacing = 8
+
+        let actionRow = NSStackView(views: [launchButton, releaseButton, terminateButton])
+        actionRow.orientation = .horizontal
+        actionRow.alignment = .centerY
+        actionRow.distribution = .fillEqually
+        actionRow.spacing = 8
+
+        let formContainer = insetView(form, top: 14, bottom: 8)
+        let actionContainer = insetView(actionRow, top: 8, bottom: 8)
+        let statusContainer = insetView(statusLabel, top: 0, bottom: 14)
+        view.setViews([formContainer, actionContainer, statusContainer], in: .top)
         view.orientation = .vertical
         view.alignment = .width
-        view.spacing = 8
+        view.spacing = 0
         view.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate(formRows.map { $0.widthAnchor.constraint(equalTo: form.widthAnchor) })
+        NSLayoutConstraint.activate([
+            formContainer.widthAnchor.constraint(equalTo: view.widthAnchor),
+            actionContainer.widthAnchor.constraint(equalTo: view.widthAnchor),
+            statusContainer.widthAnchor.constraint(equalTo: view.widthAnchor)
+        ])
         apply(AgentCommandDefinition.builtInExamples[0])
         update(isProcessRunning: false, hasLauncherAssertion: false)
+    }
+
+    private func insetView(_ content: NSView, top: CGFloat, bottom: CGFloat) -> NSView {
+        let container = NSView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+        content.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.topAnchor.constraint(equalTo: container.topAnchor, constant: top),
+            content.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 18),
+            content.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -18),
+            content.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -bottom)
+        ])
+        return container
+    }
+
+    private func formRow(_ title: String, control: NSView) -> NSStackView {
+        let label = fieldLabel(title)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        control.translatesAutoresizingMaskIntoConstraints = false
+        control.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let row = NSStackView(views: [label, control])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.distribution = .fill
+        row.spacing = 10
+        NSLayoutConstraint.activate([
+            label.widthAnchor.constraint(equalToConstant: 82)
+        ])
+        return row
+    }
+
+    private func fieldLabel(_ title: String) -> NSTextField {
+        let label = NSTextField(labelWithString: title)
+        AppLabelStyle.configureFieldLabel(label)
+        return label
     }
 
     private func currentCommand() throws -> AgentCommandDefinition {

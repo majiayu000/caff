@@ -6,6 +6,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let powerAssertions = PowerAssertionController()
     let agentRunner = AgentProcessRunner()
     let windowStatusLabel = NSTextField(labelWithString: "Off")
+    let heroEyebrowLabel = NSTextField(labelWithString: "READY - STANDBY")
+    let heroTitleLabel = NSTextField(labelWithString: "Ready to keep awake")
+    let heroMetaLabel = NSTextField(labelWithString: "No active power assertion")
+    let heroActionButton = NSButton(title: "Start", target: nil, action: nil)
     let sourceProofLabel = NSTextField(labelWithString: "Source: None")
     let assertionProofLabel = NSTextField(labelWithString: "Assertions: None")
     let reasonProofLabel = NSTextField(labelWithString: "Reason: None")
@@ -19,9 +23,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let processIdentifiersField = NSTextField(
         string: ProcessTriggerConfiguration.agentDefaults.identifiers.joined(separator: ", ")
     )
+    let processTriggerPillLabel = NSTextField(labelWithString: "Disabled")
     let processTriggerStatusLabel = NSTextField(labelWithString: "Process trigger idle")
+    let agentActivityStatusLabel = NSTextField(labelWithString: "Agent activity idle")
     let workspaceTriggerCheckbox = NSButton(checkboxWithTitle: "Auto-start for workspace activity", target: nil, action: nil)
     let workspacePathsField = NSTextField(string: "")
+    let workspaceTriggerPillLabel = NSTextField(labelWithString: "Disabled")
     let workspaceTriggerStatusLabel = NSTextField(labelWithString: "Workspace trigger idle")
     let notificationsCheckbox = NSButton(checkboxWithTitle: "Enable notifications", target: nil, action: nil)
     let historyStatusLabel = NSTextField(labelWithString: "History: Empty")
@@ -46,7 +53,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var lastErrorMessage: String?
     var updateTimer: Timer?
     var processTriggerTimer: Timer?
+    var agentActivityTimer: Timer?
     var workspaceTriggerTimer: Timer?
+    var agentActivityState: AgentActivityState?
     var processTriggerState = ProcessTriggerState.inactive
     var workspaceTriggerState = WorkspaceTriggerState.inactive
     var processTriggerKeepingAwake = false
@@ -54,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var processTriggerReason = "Process trigger"
     var workspaceTriggerReason = "Workspace trigger"
     var processTriggerSummary = "Process trigger idle"
+    var agentActivitySummary = "Agent activity idle"
     var workspaceTriggerSummary = "Workspace trigger idle"
     var keepDisplayAwake = false
     var allowLongSessionsOnBattery = false
@@ -62,7 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var notificationsEnabled = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        NSApp.setActivationPolicy(.regular)
         registerRemoteControlHandlers()
         settings = settingsStore.load()
         history = historyStore.load()
@@ -77,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         updateTimer?.invalidate()
         processTriggerTimer?.invalidate()
+        agentActivityTimer?.invalidate()
         workspaceTriggerTimer?.invalidate()
         if let activeSession {
             recordHistory(for: activeSession, result: .stopped)
@@ -110,11 +121,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stopCurrentSessionFromUI()
     }
 
+    @objc func toggleHeroSessionFromWindow() {
+        if activeSession == nil {
+            startSession(duration: .indefinitely)
+        } else {
+            stopCurrentSessionFromUI()
+        }
+    }
+
     @objc func showControlWindow() {
         let window = makeControlWindowIfNeeded()
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async { [weak self] in
+            self?.resetControlWindowScrollPosition()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            self?.resetControlWindowScrollPosition()
+        }
     }
 
     @objc func toggleDisplayAwake() {

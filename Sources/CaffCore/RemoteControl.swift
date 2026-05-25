@@ -2,12 +2,15 @@ import Foundation
 
 public enum RemoteControlError: Error, CustomStringConvertible, Equatable, Sendable {
     case invalidDuration(String)
+    case invalidCooldownSeconds(String)
     case invalidSource(String)
 
     public var description: String {
         switch self {
         case let .invalidDuration(value):
             return "Invalid duration: \(value)"
+        case let .invalidCooldownSeconds(value):
+            return "Invalid cooldown seconds: \(value)"
         case let .invalidSource(value):
             return "Invalid source: \(value)"
         }
@@ -33,6 +36,16 @@ public enum RemoteControlParser {
             throw RemoteControlError.invalidSource(value)
         }
         return source
+    }
+
+    public static func cooldownSeconds(_ value: String?) throws -> Int {
+        guard let value, !value.isEmpty else {
+            return AgentActivityCooldown.defaultCooldownSeconds
+        }
+        guard let seconds = Int(value), seconds > 0 else {
+            throw RemoteControlError.invalidCooldownSeconds(value)
+        }
+        return seconds
     }
 
     public static func bool(_ value: String?) -> Bool {

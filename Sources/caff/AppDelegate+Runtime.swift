@@ -55,7 +55,13 @@ extension AppDelegate {
     }
 
     func writeStatusSnapshot() {
-        statusStore.write(CaffStatusSnapshot.snapshot(session: activeSession, errorMessage: lastErrorMessage))
+        let agentEvaluation = AgentActivityCooldown.evaluate(state: agentActivityState)
+        statusStore.write(CaffStatusSnapshot.snapshot(
+            session: activeSession,
+            errorMessage: lastErrorMessage,
+            agentActivity: agentEvaluation.summary,
+            agentCooldownUntil: agentEvaluation.cooldownUntil
+        ))
     }
 
     func showError(_ error: Error) {

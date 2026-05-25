@@ -54,6 +54,14 @@ Caff can launch named commands from the control window and tie the wake assertio
 
 The same executable accepts `start`, `stop`, and `status` commands. `start` supports `--minutes`, `--reason`, `--display-awake`, and `--source`; `status` prints proof fields including source, assertions, reason, timestamps, display-awake state, and errors. The app bundle registers `caff://start?...` and `caff://stop` for equivalent URL-driven control.
 
+For long-running interactive agent CLIs, `agent-touch` refreshes a last-activity cooldown without relying on the `codex` or `claude` process exiting:
+
+```bash
+caff agent-touch --source codex --cooldown-seconds 1800
+```
+
+Hook `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop` to run that command. Caff keeps the Mac awake until 30 minutes after the latest agent event, then releases the assertion so macOS can follow its normal sleep policy. The equivalent URL form is `caff://agent-touch?source=codex&cooldownSeconds=1800`.
+
 ## Run
 
 ```bash
