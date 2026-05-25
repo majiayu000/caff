@@ -48,6 +48,7 @@ public enum WorkspaceActivityScanner {
             includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey, .isRegularFileKey],
             options: [.skipsHiddenFiles]
         ) else {
+            writeError("Caff could not enumerate workspace path: \(path)")
             return nil
         }
 
@@ -60,7 +61,13 @@ public enum WorkspaceActivityScanner {
                 continue
             }
 
-            guard let values = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey, .isDirectoryKey, .isRegularFileKey]) else {
+            let values: URLResourceValues
+            do {
+                values = try fileURL.resourceValues(
+                    forKeys: [.contentModificationDateKey, .isDirectoryKey, .isRegularFileKey]
+                )
+            } catch {
+                writeError("Caff could not inspect workspace file \(fileURL.path): \(error)")
                 continue
             }
 
@@ -101,5 +108,9 @@ public enum WorkspaceActivityScanner {
         }
 
         return String(filePath.dropFirst(rootPath.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    private static func writeError(_ message: String) {
+        FileHandle.standardError.write(Data("\(message)\n".utf8))
     }
 }

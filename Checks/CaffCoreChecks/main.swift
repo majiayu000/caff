@@ -249,7 +249,11 @@ do {
     let oldFilesURL = rootURL.appendingPathComponent("000-old", isDirectory: true)
     let recentFilesURL = rootURL.appendingPathComponent("zzzz-late", isDirectory: true)
     defer {
-        try? FileManager.default.removeItem(at: rootURL)
+        do {
+            try FileManager.default.removeItem(at: rootURL)
+        } catch {
+            fputs("FAIL: temporary workspace cleanup failed: \(error)\n", stderr)
+        }
     }
 
     try FileManager.default.createDirectory(at: oldFilesURL, withIntermediateDirectories: true)

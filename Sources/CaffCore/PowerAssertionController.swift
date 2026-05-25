@@ -56,8 +56,11 @@ public final class PowerAssertionController {
     public init() {}
 
     deinit {
-        for assertionID in assertionIDs.values {
-            _ = IOPMAssertionRelease(assertionID)
+        for (kind, assertionID) in assertionIDs {
+            let result = IOPMAssertionRelease(assertionID)
+            if result != kIOReturnSuccess {
+                Self.writeError("Caff failed to release \(kind.rawValue) assertion during cleanup: IOReturn \(result)")
+            }
         }
     }
 
@@ -127,5 +130,9 @@ public final class PowerAssertionController {
         }
 
         assertionIDs[kind] = assertionID
+    }
+
+    private static func writeError(_ message: String) {
+        FileHandle.standardError.write(Data("\(message)\n".utf8))
     }
 }
