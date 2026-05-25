@@ -42,6 +42,10 @@ Notifications are opt-in. When enabled, Caff can notify on session start, stop, 
 Local history is stored in Application Support and records source, reason, duration, assertion kinds, timestamps, and result.
 History starts empty and can be cleared from the menu or control window.
 
+## Settings
+
+Caff persists menu bar density and launch behavior. The menu bar can show icon-only, `CAFF`, compact countdown, or source labels, and the control window can be disabled on launch.
+
 ## Run
 
 ```bash
