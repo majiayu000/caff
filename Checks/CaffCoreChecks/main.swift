@@ -59,6 +59,45 @@ check(
 )
 check(proofSession.compactStatus(now: now) == "1h", "session should expose compact remaining status")
 
+let policy = SafetyPolicy.standard
+check(policy.maximumSessionMinutes == 240, "standard policy should cap sessions at four hours")
+check(policy.stopGracePeriodSeconds == 60, "standard policy should keep a deterministic stop grace period")
+check(
+    policy.effectiveEndDate(for: .indefinitely, startedAt: startDate) == Date(timeIntervalSince1970: 15_400),
+    "indefinite sessions should be capped by policy"
+)
+check(
+    policy.sessionNotes(for: .indefinitely, powerSource: .acPower).contains("Indefinite is capped"),
+    "policy notes should surface capped indefinite sessions"
+)
+
+let cappedSession = WakeSession(
+    options: SessionOptions(duration: .indefinitely),
+    startedAt: startDate,
+    activeAssertions: [.idleSystemSleep],
+    endDate: policy.effectiveEndDate(for: .indefinitely, startedAt: startDate)
+)
+check(cappedSession.compactStatus(now: startDate) == "4h", "policy-capped indefinite sessions should show capped time")
+
+do {
+    try policy.validate(duration: .oneHour, powerSource: .batteryPower)
+    failures.append("long battery sessions should be blocked by default")
+} catch let error as SafetyPolicyError {
+    check(
+        error == .longSessionOnBattery(durationLabel: "1 Hour", thresholdMinutes: 60),
+        "battery policy should report the blocked duration"
+    )
+} catch {
+    failures.append("battery policy failed with unexpected error: \(error)")
+}
+
+let permissivePolicy = SafetyPolicy(allowLongSessionsOnBattery: true)
+do {
+    try permissivePolicy.validate(duration: .fourHours, powerSource: .batteryPower)
+} catch {
+    failures.append("explicitly allowed long battery sessions should pass validation: \(error)")
+}
+
 do {
     let controller = PowerAssertionController()
     try controller.start(options: SessionOptions(duration: .thirtyMinutes, keepDisplayAwake: true))

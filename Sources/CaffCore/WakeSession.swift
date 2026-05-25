@@ -40,12 +40,13 @@ public struct WakeSession: Equatable, Sendable {
         options: SessionOptions,
         startedAt: Date,
         activeAssertions: Set<PowerAssertionKind>,
-        errorMessage: String? = nil
+        errorMessage: String? = nil,
+        endDate: Date? = nil
     ) {
         self.source = options.source
         self.duration = options.duration
         self.startedAt = startedAt
-        self.endDate = options.duration.endDate(from: startedAt)
+        self.endDate = endDate ?? options.duration.endDate(from: startedAt)
         self.keepDisplayAwake = options.keepDisplayAwake
         self.reason = options.reason
         self.activeAssertions = activeAssertions

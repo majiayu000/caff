@@ -36,6 +36,7 @@ public enum PowerAssertionKind: String, CaseIterable, Sendable {
 public enum PowerAssertionError: Error, CustomStringConvertible, Equatable {
     case createFailed(kind: PowerAssertionKind, code: IOReturn)
     case releaseFailed(kind: PowerAssertionKind, code: IOReturn)
+    case cleanupAfterCreateFailed(createFailure: String, cleanupFailure: String)
 
     public var description: String {
         switch self {
@@ -43,6 +44,8 @@ public enum PowerAssertionError: Error, CustomStringConvertible, Equatable {
             return "Failed to create \(kind.rawValue) assertion: IOReturn \(code)"
         case let .releaseFailed(kind, code):
             return "Failed to release \(kind.rawValue) assertion: IOReturn \(code)"
+        case let .cleanupAfterCreateFailed(createFailure, cleanupFailure):
+            return "\(createFailure); cleanup also failed: \(cleanupFailure)"
         }
     }
 }
@@ -76,8 +79,16 @@ public final class PowerAssertionController {
                 try createAssertion(.displaySleep, reason: options.reason)
             }
         } catch {
-            try? stop()
-            throw error
+            let createFailure = error
+            do {
+                try stop()
+            } catch {
+                throw PowerAssertionError.cleanupAfterCreateFailed(
+                    createFailure: String(describing: createFailure),
+                    cleanupFailure: String(describing: error)
+                )
+            }
+            throw createFailure
         }
     }
 
