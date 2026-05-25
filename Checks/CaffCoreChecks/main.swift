@@ -90,6 +90,18 @@ check(historyEntry.assertionKinds == ["PreventUserIdleSystemSleep", "NoDisplaySl
 check(historyEntry.result == .stopped, "history should record session result")
 check(historyEntry.summary == "Stopped: Process - 1 Hour", "history should expose a compact summary")
 
+let exitedHistoryEntry = SessionHistoryEntry(
+    session: proofSession,
+    endedAt: now.addingTimeInterval(180),
+    result: .exited,
+    errorMessage: "codex exited with status 0",
+    exitStatus: 0,
+    terminationReason: "exit"
+)
+check(exitedHistoryEntry.exitStatus == 0, "history should record launched command exit status")
+check(exitedHistoryEntry.terminationReason == "exit", "history should record launched command termination reason")
+check(exitedHistoryEntry.summary == "Exited: Process - exit 0", "history summary should expose launched command exit status")
+
 do {
     try policy.validate(duration: .oneHour, powerSource: .batteryPower)
     failures.append("long battery sessions should be blocked by default")
@@ -158,6 +170,17 @@ let (inactiveEvaluation, inactiveState) = processTrigger.evaluate(
 )
 check(!inactiveEvaluation.isKeepingAwake, "process trigger should stop after grace expires")
 check(inactiveState == .inactive, "expired process trigger should reset state")
+
+let builtInCommands = AgentCommandDefinition.builtInExamples.map(\.name)
+check(builtInCommands == ["codex", "claude", "npm test", "cargo test"], "agent launcher should include expected built-in commands")
+do {
+    let tokens = try AgentCommandParser.tokenizeArguments("--flag \"hello world\" 'two words'")
+    check(tokens == ["--flag", "hello world", "two words"], "agent launcher should parse quoted arguments")
+    let environment = try AgentCommandParser.parseEnvironment("FOO=bar, EMPTY=, PATH=/tmp/bin")
+    check(environment == ["FOO": "bar", "EMPTY": "", "PATH": "/tmp/bin"], "agent launcher should parse environment assignments")
+} catch {
+    failures.append("agent command parsing failed: \(error)")
+}
 
 let workspaceTriggerConfig = WorkspaceTriggerConfiguration(
     paths: ["/tmp/caff-workspace"],

@@ -3,50 +3,58 @@ import CaffCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    private let powerAssertions = PowerAssertionController()
-    private let windowStatusLabel = NSTextField(labelWithString: "Off")
-    private let sourceProofLabel = NSTextField(labelWithString: "Source: None")
-    private let assertionProofLabel = NSTextField(labelWithString: "Assertions: None")
-    private let reasonProofLabel = NSTextField(labelWithString: "Reason: None")
-    private let startedProofLabel = NSTextField(labelWithString: "Started: None")
-    private let errorProofLabel = NSTextField(labelWithString: "")
-    private let policyStatusLabel = NSTextField(labelWithString: "Safety: \(SafetyPolicy.standard.summary)")
-    private let lidLimitLabel = NSTextField(labelWithString: "Lid close depends on macOS, power, and display setup.")
-    private let displayAwakeCheckbox = NSButton(checkboxWithTitle: "Keep display awake", target: nil, action: nil)
-    private let batteryPolicyCheckbox = NSButton(checkboxWithTitle: "Allow long sessions on battery", target: nil, action: nil)
-    private let processTriggerCheckbox = NSButton(checkboxWithTitle: "Auto-start for agent processes", target: nil, action: nil)
-    private let processIdentifiersField = NSTextField(
+    let powerAssertions = PowerAssertionController()
+    let agentRunner = AgentProcessRunner()
+    let windowStatusLabel = NSTextField(labelWithString: "Off")
+    let sourceProofLabel = NSTextField(labelWithString: "Source: None")
+    let assertionProofLabel = NSTextField(labelWithString: "Assertions: None")
+    let reasonProofLabel = NSTextField(labelWithString: "Reason: None")
+    let startedProofLabel = NSTextField(labelWithString: "Started: None")
+    let errorProofLabel = NSTextField(labelWithString: "")
+    let policyStatusLabel = NSTextField(labelWithString: "Safety: \(SafetyPolicy.standard.summary)")
+    let lidLimitLabel = NSTextField(labelWithString: "Lid close depends on macOS, power, and display setup.")
+    let displayAwakeCheckbox = NSButton(checkboxWithTitle: "Keep display awake", target: nil, action: nil)
+    let batteryPolicyCheckbox = NSButton(checkboxWithTitle: "Allow long sessions on battery", target: nil, action: nil)
+    let processTriggerCheckbox = NSButton(checkboxWithTitle: "Auto-start for agent processes", target: nil, action: nil)
+    let processIdentifiersField = NSTextField(
         string: ProcessTriggerConfiguration.agentDefaults.identifiers.joined(separator: ", ")
     )
-    private let processTriggerStatusLabel = NSTextField(labelWithString: "Process trigger idle")
-    private let workspaceTriggerCheckbox = NSButton(checkboxWithTitle: "Auto-start for workspace activity", target: nil, action: nil)
-    private let workspacePathsField = NSTextField(string: "")
-    private let workspaceTriggerStatusLabel = NSTextField(labelWithString: "Workspace trigger idle")
-    private let notificationsCheckbox = NSButton(checkboxWithTitle: "Enable notifications", target: nil, action: nil)
-    private let historyStatusLabel = NSTextField(labelWithString: "History: Empty")
-    private let stopButton = NSButton(title: "Stop", target: nil, action: nil)
-    private let clearHistoryButton = NSButton(title: "Clear History", target: nil, action: nil)
+    let processTriggerStatusLabel = NSTextField(labelWithString: "Process trigger idle")
+    let workspaceTriggerCheckbox = NSButton(checkboxWithTitle: "Auto-start for workspace activity", target: nil, action: nil)
+    let workspacePathsField = NSTextField(string: "")
+    let workspaceTriggerStatusLabel = NSTextField(labelWithString: "Workspace trigger idle")
+    let notificationsCheckbox = NSButton(checkboxWithTitle: "Enable notifications", target: nil, action: nil)
+    let historyStatusLabel = NSTextField(labelWithString: "History: Empty")
+    let stopButton = NSButton(title: "Stop", target: nil, action: nil)
+    let clearHistoryButton = NSButton(title: "Clear History", target: nil, action: nil)
     private let historyStore = SessionHistoryStore()
     private let notificationBridge = NotificationBridge()
     private let settingsStore = AppSettingsStore()
-    private var startButtons: [NSButton] = []
-    private var controlWindow: NSWindow?
-    private var activeSession: WakeSession?
-    private var history: [SessionHistoryEntry] = []
+    lazy var agentLauncherPanel = AgentLauncherPanel(
+        onLaunch: { [weak self] command in self?.launchAgentCommand(command) },
+        onReleaseAssertion: { [weak self] in self?.releaseLauncherAssertionOnly() },
+        onTerminate: { [weak self] in self?.confirmTerminateAgentCommand() },
+        onError: { [weak self] error in self?.showError(error) }
+    )
+    var startButtons: [NSButton] = []
+    var controlWindow: NSWindow?
+    var activeSession: WakeSession?
+    var releasedLauncherSession: WakeSession?
+    var history: [SessionHistoryEntry] = []
     private var settings = AppSettings.standard
-    private var lastErrorMessage: String?
+    var lastErrorMessage: String?
     private var updateTimer: Timer?
     private var processTriggerTimer: Timer?
     private var workspaceTriggerTimer: Timer?
     private var processTriggerState = ProcessTriggerState.inactive
     private var workspaceTriggerState = WorkspaceTriggerState.inactive
-    private var processTriggerSummary = "Process trigger idle"
-    private var workspaceTriggerSummary = "Workspace trigger idle"
-    private var keepDisplayAwake = false
-    private var allowLongSessionsOnBattery = false
-    private var processTriggerEnabled = false
-    private var workspaceTriggerEnabled = false
-    private var notificationsEnabled = false
+    var processTriggerSummary = "Process trigger idle"
+    var workspaceTriggerSummary = "Workspace trigger idle"
+    var keepDisplayAwake = false
+    var allowLongSessionsOnBattery = false
+    var processTriggerEnabled = false
+    var workspaceTriggerEnabled = false
+    var notificationsEnabled = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -74,24 +82,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func startIndefinitely() {
+    @objc func startIndefinitely() {
         startSession(duration: .indefinitely)
     }
 
-    @objc private func startThirtyMinutes() {
+    @objc func startThirtyMinutes() {
         startSession(duration: .thirtyMinutes)
     }
 
-    @objc private func startOneHour() {
+    @objc func startOneHour() {
         startSession(duration: .oneHour)
     }
 
-    @objc private func startFourHours() {
+    @objc func startFourHours() {
         startSession(duration: .fourHours)
     }
 
-    @objc private func stopSessionFromMenu() {
-        stopSession(result: .stopped)
+    @objc func stopSessionFromMenu() {
+        stopCurrentSessionFromUI()
     }
 
     @objc private func showControlWindow() {
@@ -101,7 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    @objc private func toggleDisplayAwake() {
+    @objc func toggleDisplayAwake() {
         keepDisplayAwake.toggle()
 
         if let activeSession {
@@ -123,13 +131,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateStatusTitle()
     }
 
-    @objc private func toggleBatteryPolicy() {
+    @objc func toggleBatteryPolicy() {
         allowLongSessionsOnBattery.toggle()
         rebuildMenu()
         updateStatusTitle()
     }
 
-    @objc private func toggleProcessTrigger() {
+    @objc func toggleProcessTrigger() {
         processTriggerEnabled.toggle()
         processTriggerState = .inactive
         processTriggerSummary = processTriggerEnabled ? "Process trigger watching" : "Process trigger idle"
@@ -149,7 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateStatusTitle()
     }
 
-    @objc private func toggleWorkspaceTrigger() {
+    @objc func toggleWorkspaceTrigger() {
         workspaceTriggerEnabled.toggle()
         workspaceTriggerState = .inactive
         workspaceTriggerSummary = workspaceTriggerEnabled ? "Workspace trigger watching" : "Workspace trigger idle"
@@ -169,7 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateStatusTitle()
     }
 
-    @objc private func toggleNotifications() {
+    @objc func toggleNotifications() {
         notificationsEnabled.toggle()
         if notificationsEnabled {
             notificationBridge.requestAuthorizationIfNeeded()
@@ -178,7 +186,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateStatusTitle()
     }
 
-    @objc private func clearHistory() {
+    @objc func clearHistory() {
         history = []
         historyStore.clear()
         rebuildMenu()
@@ -290,7 +298,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @discardableResult
-    private func startSession(
+    func startSession(
         duration: SessionDuration,
         source: SessionSource = .manual,
         reason: String = "Caff is keeping this Mac awake"
@@ -321,12 +329,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func stopSession(result: SessionHistoryResult) {
+    func stopSession(
+        result: SessionHistoryResult,
+        errorMessage: String? = nil,
+        exitStatus: Int32? = nil,
+        terminationReason: String? = nil
+    ) {
         let sessionToRecord = activeSession
         do {
             try powerAssertions.stop()
             if let sessionToRecord {
-                recordHistory(for: sessionToRecord, result: result)
+                recordHistory(
+                    for: sessionToRecord,
+                    result: result,
+                    errorMessage: errorMessage,
+                    exitStatus: exitStatus,
+                    terminationReason: terminationReason
+                )
                 sendNotification(title: "Caff stopped", body: sessionToRecord.reason)
             }
             clearSessionState()
@@ -360,7 +379,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
-    private func currentSafetyPolicy() -> SafetyPolicy {
+    func currentSafetyPolicy() -> SafetyPolicy {
         SafetyPolicy(allowLongSessionsOnBattery: allowLongSessionsOnBattery)
     }
 
@@ -404,7 +423,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func safetyNotes(for activeSession: WakeSession) -> [String] {
+    func safetyNotes(for activeSession: WakeSession) -> [String] {
         currentSafetyPolicy().sessionNotes(
             for: activeSession.duration,
             powerSource: PowerSourceMonitor.current()
@@ -472,7 +491,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateTimer = nil
     }
 
-    private func updateStatusTitle() {
+    func updateStatusTitle() {
         statusItem.length = settings.menuBarDisplayMode == .iconOnly ? NSStatusItem.squareLength : NSStatusItem.variableLength
         statusItem.button?.title = menuBarTitle()
         updateControlWindow()
@@ -499,7 +518,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func rebuildMenu() {
+    func rebuildMenu() {
         let menu = NSMenu()
         if let activeSession {
             menu.addItem(disabledMenuItem("Running: \(activeSession.sourceLabel) - \(activeSession.duration.label)"))
@@ -548,218 +567,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
     }
 
-    private func makeControlWindowIfNeeded() -> NSWindow {
-        if let controlWindow {
-            return controlWindow
-        }
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 450, height: 700),
-            styleMask: [.titled, .closable, .miniaturizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "Caff"
-        window.isReleasedWhenClosed = false
-        let titleLabel = NSTextField(labelWithString: "Caff")
-        titleLabel.font = .boldSystemFont(ofSize: 24)
-        titleLabel.alignment = .center
-        windowStatusLabel.font = .systemFont(ofSize: 15, weight: .medium)
-        windowStatusLabel.alignment = .center
-        let proofStack = NSStackView(views: [
-            sourceProofLabel,
-            assertionProofLabel,
-            reasonProofLabel,
-            startedProofLabel,
-            errorProofLabel
-        ])
-        proofStack.orientation = .vertical
-        proofStack.alignment = .leading
-        proofStack.spacing = 4
-        proofStack.translatesAutoresizingMaskIntoConstraints = false
-        configureProofLabel(sourceProofLabel)
-        configureProofLabel(assertionProofLabel)
-        configureProofLabel(reasonProofLabel)
-        configureProofLabel(startedProofLabel)
-        configureProofLabel(errorProofLabel)
-        configureSecondaryLabel(policyStatusLabel)
-        configureSecondaryLabel(lidLimitLabel)
-
-        let startGrid = NSGridView(views: [
-            [
-                startButton("Indefinitely", action: #selector(startIndefinitely)),
-                startButton("30 Minutes", action: #selector(startThirtyMinutes))
-            ],
-            [
-                startButton("1 Hour", action: #selector(startOneHour)),
-                startButton("4 Hours", action: #selector(startFourHours))
-            ]
-        ])
-        startGrid.columnSpacing = 10
-        startGrid.rowSpacing = 10
-        startGrid.xPlacement = .fill
-
-        displayAwakeCheckbox.target = self
-        displayAwakeCheckbox.action = #selector(toggleDisplayAwake)
-
-        batteryPolicyCheckbox.target = self
-        batteryPolicyCheckbox.action = #selector(toggleBatteryPolicy)
-
-        processTriggerCheckbox.target = self
-        processTriggerCheckbox.action = #selector(toggleProcessTrigger)
-        processIdentifiersField.placeholderString = "codex, claude, node, python, cargo, swift"
-        processIdentifiersField.font = .systemFont(ofSize: 12)
-        configureSecondaryLabel(processTriggerStatusLabel)
-
-        workspaceTriggerCheckbox.target = self
-        workspaceTriggerCheckbox.action = #selector(toggleWorkspaceTrigger)
-        workspacePathsField.placeholderString = "~/Desktop/code, /path/to/workspace"
-        workspacePathsField.font = .systemFont(ofSize: 12)
-        configureSecondaryLabel(workspaceTriggerStatusLabel)
-
-        notificationsCheckbox.target = self
-        notificationsCheckbox.action = #selector(toggleNotifications)
-        configureSecondaryLabel(historyStatusLabel)
-
-        stopButton.target = self
-        stopButton.action = #selector(stopSessionFromMenu)
-        stopButton.bezelStyle = .rounded
-        clearHistoryButton.target = self
-        clearHistoryButton.action = #selector(clearHistory)
-        clearHistoryButton.bezelStyle = .rounded
-
-        let stack = NSStackView(views: [
-            titleLabel,
-            windowStatusLabel,
-            proofStack,
-            policyStatusLabel,
-            lidLimitLabel,
-            startGrid,
-            displayAwakeCheckbox,
-            batteryPolicyCheckbox,
-            processTriggerCheckbox,
-            processIdentifiersField,
-            processTriggerStatusLabel,
-            workspaceTriggerCheckbox,
-            workspacePathsField,
-            workspaceTriggerStatusLabel,
-            notificationsCheckbox,
-            historyStatusLabel,
-            clearHistoryButton,
-            stopButton
-        ])
-        stack.orientation = .vertical
-        stack.alignment = .centerX
-        stack.spacing = 12
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        let contentView = NSView()
-        contentView.addSubview(stack)
-        window.contentView = contentView
-
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -24),
-            stack.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
-            proofStack.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            policyStatusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            lidLimitLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            startGrid.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            processIdentifiersField.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            processTriggerStatusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            workspacePathsField.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            workspaceTriggerStatusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            historyStatusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            clearHistoryButton.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            stopButton.widthAnchor.constraint(equalTo: stack.widthAnchor)
-        ])
-
-        controlWindow = window
-        updateControlWindow()
-        return window
-    }
-
-    private func startButton(_ title: String, action: Selector) -> NSButton {
-        let button = NSButton(title: title, target: self, action: action)
-        button.bezelStyle = .rounded
-        button.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        startButtons.append(button)
-        return button
-    }
-
-    private func updateControlWindow() {
-        let isRunning = activeSession != nil
-        let statusText: String
-
-        if let activeSession {
-            let compactStatus = activeSession.compactStatus()
-            statusText = activeSession.endDate == nil ? "On" : "On: \(compactStatus)"
-            sourceProofLabel.stringValue = "Source: \(activeSession.sourceLabel)"
-            assertionProofLabel.stringValue = "Assertions: \(activeSession.assertionSummary)"
-            reasonProofLabel.stringValue = "Reason: \(activeSession.reason)"
-            startedProofLabel.stringValue = "Started: \(formatDate(activeSession.startedAt))"
-            errorProofLabel.stringValue = activeSession.errorMessage.map { "Error: \($0)" } ?? ""
-            policyStatusLabel.stringValue = "Safety: \(safetyNotes(for: activeSession).joined(separator: ", "))"
-        } else {
-            statusText = lastErrorMessage == nil ? "Off" : "Error"
-            sourceProofLabel.stringValue = "Source: None"
-            assertionProofLabel.stringValue = "Assertions: None"
-            reasonProofLabel.stringValue = "Reason: None"
-            startedProofLabel.stringValue = "Started: None"
-            errorProofLabel.stringValue = lastErrorMessage.map { "Error: \($0)" } ?? ""
-            policyStatusLabel.stringValue = "Safety: \(currentSafetyPolicy().summary)"
-        }
-
-        windowStatusLabel.stringValue = statusText
-        displayAwakeCheckbox.state = keepDisplayAwake ? .on : .off
-        batteryPolicyCheckbox.state = allowLongSessionsOnBattery ? .on : .off
-        processTriggerCheckbox.state = processTriggerEnabled ? .on : .off
-        processTriggerStatusLabel.stringValue = processTriggerSummary
-        workspaceTriggerCheckbox.state = workspaceTriggerEnabled ? .on : .off
-        workspaceTriggerStatusLabel.stringValue = workspaceTriggerSummary
-        notificationsCheckbox.state = notificationsEnabled ? .on : .off
-        historyStatusLabel.stringValue = historyMenuSummary()
-        clearHistoryButton.isEnabled = !history.isEmpty
-        stopButton.isEnabled = isRunning
-        for button in startButtons {
-            button.isEnabled = !isRunning
-        }
-    }
-
-    private func configureProofLabel(_ label: NSTextField) {
-        label.font = .systemFont(ofSize: 12)
-        label.textColor = .secondaryLabelColor
-        label.lineBreakMode = .byTruncatingMiddle
-        label.maximumNumberOfLines = 1
-    }
-
-    private func configureSecondaryLabel(_ label: NSTextField) {
-        label.font = .systemFont(ofSize: 12)
-        label.textColor = .secondaryLabelColor
-        label.alignment = .center
-        label.maximumNumberOfLines = 2
-        label.lineBreakMode = .byWordWrapping
-    }
-
-    private func formatDate(_ date: Date) -> String {
-        DateFormatter.localizedString(from: date, dateStyle: .none, timeStyle: .medium)
-    }
-
     private func disabledMenuItem(_ title: String) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         item.isEnabled = false
         return item
     }
 
-    private func recordHistory(
+    func recordHistory(
         for session: WakeSession,
         result: SessionHistoryResult,
-        errorMessage: String? = nil
+        errorMessage: String? = nil,
+        exitStatus: Int32? = nil,
+        terminationReason: String? = nil
     ) {
-        let entry = SessionHistoryEntry(session: session, result: result, errorMessage: errorMessage)
+        let entry = SessionHistoryEntry(
+            session: session,
+            result: result,
+            errorMessage: errorMessage,
+            exitStatus: exitStatus,
+            terminationReason: terminationReason
+        )
         history = historyStore.append(entry, to: history)
     }
 
-    private func historyMenuSummary() -> String {
+    func historyMenuSummary() -> String {
         guard let latest = history.first else {
             return "History: Empty"
         }
@@ -767,7 +598,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return "History: \(latest.summary)"
     }
 
-    private func sendNotification(title: String, body: String) {
+    func sendNotification(title: String, body: String) {
         guard notificationsEnabled else {
             return
         }
@@ -781,7 +612,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
 
-    private func showError(_ error: Error) {
+    func showError(_ error: Error) {
         lastErrorMessage = String(describing: error)
         sendNotification(title: "Caff error", body: lastErrorMessage ?? "Unknown error")
         rebuildMenu()

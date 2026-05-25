@@ -13,7 +13,7 @@ enum WorkspaceActivityScanner {
     static func activities(configuration: WorkspaceTriggerConfiguration, now: Date = Date()) -> [WorkspaceActivity] {
         configuration.normalizedPaths.compactMap { rawPath in
             activity(
-                path: expandTilde(rawPath),
+                path: PathExpansion.expandTilde(rawPath),
                 recentWindowSeconds: configuration.recentActivityWindowSeconds,
                 now: now
             )
@@ -110,7 +110,4 @@ enum WorkspaceActivityScanner {
         return String(filePath.dropFirst(rootPath.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 
-    private static func expandTilde(_ path: String) -> String {
-        (path as NSString).expandingTildeInPath
-    }
 }
