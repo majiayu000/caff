@@ -22,10 +22,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let workspaceTriggerCheckbox = NSButton(checkboxWithTitle: "Auto-start for workspace activity", target: nil, action: nil)
     private let workspacePathsField = NSTextField(string: "")
     private let workspaceTriggerStatusLabel = NSTextField(labelWithString: "Workspace trigger idle")
+    private let notificationsCheckbox = NSButton(checkboxWithTitle: "Enable notifications", target: nil, action: nil)
+    private let historyStatusLabel = NSTextField(labelWithString: "History: Empty")
     private let stopButton = NSButton(title: "Stop", target: nil, action: nil)
+    private let clearHistoryButton = NSButton(title: "Clear History", target: nil, action: nil)
+    private let historyStore = SessionHistoryStore()
+    private let notificationBridge = NotificationBridge()
     private var startButtons: [NSButton] = []
     private var controlWindow: NSWindow?
     private var activeSession: WakeSession?
+    private var history: [SessionHistoryEntry] = []
     private var lastErrorMessage: String?
     private var updateTimer: Timer?
     private var processTriggerTimer: Timer?
@@ -38,9 +44,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var allowLongSessionsOnBattery = false
     private var processTriggerEnabled = false
     private var workspaceTriggerEnabled = false
+    private var notificationsEnabled = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        history = historyStore.load()
         statusItem.button?.title = "CAFF"
         rebuildMenu()
         updateStatusTitle()
@@ -51,6 +59,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateTimer?.invalidate()
         processTriggerTimer?.invalidate()
         workspaceTriggerTimer?.invalidate()
+        if let activeSession {
+            recordHistory(for: activeSession, result: .stopped)
+        }
         do {
             try powerAssertions.stop()
         } catch {
@@ -75,7 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func stopSessionFromMenu() {
-        stopSession()
+        stopSession(result: .stopped)
     }
 
     @objc private func showControlWindow() {
@@ -125,7 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             processTriggerTimer?.invalidate()
             processTriggerTimer = nil
             if activeSession?.source == .process {
-                stopSession()
+                stopSession(result: .stopped)
             }
         }
 
@@ -145,10 +156,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             workspaceTriggerTimer?.invalidate()
             workspaceTriggerTimer = nil
             if activeSession?.source == .workspace {
-                stopSession()
+                stopSession(result: .stopped)
             }
         }
 
+        rebuildMenu()
+        updateStatusTitle()
+    }
+
+    @objc private func toggleNotifications() {
+        notificationsEnabled.toggle()
+        if notificationsEnabled {
+            notificationBridge.requestAuthorizationIfNeeded()
+        }
+        rebuildMenu()
+        updateStatusTitle()
+    }
+
+    @objc private func clearHistory() {
+        history = []
+        historyStore.clear()
         rebuildMenu()
         updateStatusTitle()
     }
@@ -180,7 +207,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         } else if activeSession?.source == .process {
-            stopSession()
+            stopSession(result: .stopped)
         }
 
         rebuildMenu()
@@ -215,7 +242,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         } else if activeSession?.source == .workspace {
-            stopSession()
+            stopSession(result: .stopped)
         }
 
         rebuildMenu()
@@ -237,7 +264,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if let endDate = activeSession.endDate, Date() >= endDate {
-            stopSession()
+            stopSession(result: .timedOut)
             return
         }
 
@@ -266,6 +293,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             lastErrorMessage = nil
             scheduleTimer()
+            sendNotification(title: "Caff started", body: sessionOptions.reason)
             rebuildMenu()
             updateStatusTitle()
             return true
@@ -275,9 +303,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func stopSession() {
+    private func stopSession(result: SessionHistoryResult) {
+        let sessionToRecord = activeSession
         do {
             try powerAssertions.stop()
+            if let sessionToRecord {
+                recordHistory(for: sessionToRecord, result: result)
+                sendNotification(title: "Caff stopped", body: sessionToRecord.reason)
+            }
             clearSessionState()
             lastErrorMessage = nil
             rebuildMenu()
@@ -363,6 +396,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func stopSessionForPolicyViolation(_ policyError: Error) {
         do {
             try powerAssertions.stop()
+            if let activeSession {
+                recordHistory(for: activeSession, result: .policyStopped, errorMessage: String(describing: policyError))
+                sendNotification(title: "Caff stopped by policy", body: String(describing: policyError))
+            }
             clearSessionState()
         } catch {
             showError(error)
@@ -464,8 +501,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let workspaceItem = menuItem("Auto Start for Workspace Activity", action: #selector(toggleWorkspaceTrigger))
         workspaceItem.state = workspaceTriggerEnabled ? .on : .off
         menu.addItem(workspaceItem)
-        menu.addItem(disabledMenuItem(workspaceTriggerSummary))
+            menu.addItem(disabledMenuItem(workspaceTriggerSummary))
         menu.addItem(disabledMenuItem("Lid close depends on macOS power/display policy"))
+
+        let notificationsItem = menuItem("Enable Notifications", action: #selector(toggleNotifications))
+        notificationsItem.state = notificationsEnabled ? .on : .off
+        menu.addItem(notificationsItem)
+        menu.addItem(disabledMenuItem(historyMenuSummary()))
+        menu.addItem(menuItem("Clear History", action: #selector(clearHistory)))
 
         menu.addItem(.separator())
         menu.addItem(menuItem("Show Caff", action: #selector(showControlWindow)))
@@ -480,7 +523,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 450, height: 620),
+            contentRect: NSRect(x: 0, y: 0, width: 450, height: 700),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -546,9 +589,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         workspacePathsField.font = .systemFont(ofSize: 12)
         configureSecondaryLabel(workspaceTriggerStatusLabel)
 
+        notificationsCheckbox.target = self
+        notificationsCheckbox.action = #selector(toggleNotifications)
+        configureSecondaryLabel(historyStatusLabel)
+
         stopButton.target = self
         stopButton.action = #selector(stopSessionFromMenu)
         stopButton.bezelStyle = .rounded
+        clearHistoryButton.target = self
+        clearHistoryButton.action = #selector(clearHistory)
+        clearHistoryButton.bezelStyle = .rounded
 
         let stack = NSStackView(views: [
             titleLabel,
@@ -565,6 +615,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             workspaceTriggerCheckbox,
             workspacePathsField,
             workspaceTriggerStatusLabel,
+            notificationsCheckbox,
+            historyStatusLabel,
+            clearHistoryButton,
             stopButton
         ])
         stack.orientation = .vertical
@@ -588,6 +641,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             processTriggerStatusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
             workspacePathsField.widthAnchor.constraint(equalTo: stack.widthAnchor),
             workspaceTriggerStatusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            historyStatusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            clearHistoryButton.widthAnchor.constraint(equalTo: stack.widthAnchor),
             stopButton.widthAnchor.constraint(equalTo: stack.widthAnchor)
         ])
 
@@ -634,6 +689,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         processTriggerStatusLabel.stringValue = processTriggerSummary
         workspaceTriggerCheckbox.state = workspaceTriggerEnabled ? .on : .off
         workspaceTriggerStatusLabel.stringValue = workspaceTriggerSummary
+        notificationsCheckbox.state = notificationsEnabled ? .on : .off
+        historyStatusLabel.stringValue = historyMenuSummary()
+        clearHistoryButton.isEnabled = !history.isEmpty
         stopButton.isEnabled = isRunning
         for button in startButtons {
             button.isEnabled = !isRunning
@@ -665,6 +723,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
 
+    private func recordHistory(
+        for session: WakeSession,
+        result: SessionHistoryResult,
+        errorMessage: String? = nil
+    ) {
+        let entry = SessionHistoryEntry(session: session, result: result, errorMessage: errorMessage)
+        history = historyStore.append(entry, to: history)
+    }
+
+    private func historyMenuSummary() -> String {
+        guard let latest = history.first else {
+            return "History: Empty"
+        }
+
+        return "History: \(latest.summary)"
+    }
+
+    private func sendNotification(title: String, body: String) {
+        guard notificationsEnabled else {
+            return
+        }
+
+        notificationBridge.send(title: title, body: body)
+    }
+
     private func menuItem(_ title: String, action: Selector?, keyEquivalent: String = "") -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
         item.target = self
@@ -673,6 +756,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showError(_ error: Error) {
         lastErrorMessage = String(describing: error)
+        sendNotification(title: "Caff error", body: lastErrorMessage ?? "Unknown error")
         rebuildMenu()
         updateStatusTitle()
 
