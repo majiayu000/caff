@@ -10,7 +10,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let reasonProofLabel = NSTextField(labelWithString: "Reason: None")
     private let startedProofLabel = NSTextField(labelWithString: "Started: None")
     private let errorProofLabel = NSTextField(labelWithString: "")
+    private let policyStatusLabel = NSTextField(labelWithString: "Safety: \(SafetyPolicy.standard.summary)")
+    private let lidLimitLabel = NSTextField(labelWithString: "Lid close depends on macOS, power, and display setup.")
     private let displayAwakeCheckbox = NSButton(checkboxWithTitle: "Keep display awake", target: nil, action: nil)
+    private let batteryPolicyCheckbox = NSButton(checkboxWithTitle: "Allow long sessions on battery", target: nil, action: nil)
     private let stopButton = NSButton(title: "Stop", target: nil, action: nil)
     private var startButtons: [NSButton] = []
     private var controlWindow: NSWindow?
@@ -18,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastErrorMessage: String?
     private var updateTimer: Timer?
     private var keepDisplayAwake = false
+    private var allowLongSessionsOnBattery = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -29,7 +33,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         updateTimer?.invalidate()
-        try? powerAssertions.stop()
+        do {
+            try powerAssertions.stop()
+        } catch {
+            fputs("Caff failed to release wake assertion on quit: \(error)\n", stderr)
+        }
     }
 
     @objc private func startIndefinitely() {
@@ -81,6 +89,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateStatusTitle()
     }
 
+    @objc private func toggleBatteryPolicy() {
+        allowLongSessionsOnBattery.toggle()
+        rebuildMenu()
+        updateStatusTitle()
+    }
+
     @objc private func quit() {
         NSApp.terminate(nil)
     }
@@ -88,6 +102,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func tick() {
         guard let activeSession else {
             updateStatusTitle()
+            return
+        }
+
+        if !enforceBatteryPolicy(activeSession) {
             return
         }
 
@@ -101,14 +119,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startSession(duration: SessionDuration) {
         let startedAt = Date()
+        let powerSource = PowerSourceMonitor.current()
+        let safetyPolicy = currentSafetyPolicy()
         let sessionOptions = options(for: duration)
 
         do {
+            try safetyPolicy.validate(duration: duration, powerSource: powerSource)
             try powerAssertions.start(options: sessionOptions)
             activeSession = WakeSession(
                 options: sessionOptions,
                 startedAt: startedAt,
-                activeAssertions: powerAssertions.activeAssertions
+                activeAssertions: powerAssertions.activeAssertions,
+                endDate: safetyPolicy.effectiveEndDate(for: duration, startedAt: startedAt)
             )
             lastErrorMessage = nil
             scheduleTimer()
@@ -144,16 +166,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
+    private func currentSafetyPolicy() -> SafetyPolicy {
+        SafetyPolicy(allowLongSessionsOnBattery: allowLongSessionsOnBattery)
+    }
+
+    private func enforceBatteryPolicy(_ activeSession: WakeSession) -> Bool {
+        do {
+            try currentSafetyPolicy().validate(
+                duration: activeSession.duration,
+                powerSource: PowerSourceMonitor.current()
+            )
+            return true
+        } catch {
+            stopSessionForPolicyViolation(error)
+            return false
+        }
+    }
+
+    private func safetyNotes(for activeSession: WakeSession) -> [String] {
+        currentSafetyPolicy().sessionNotes(
+            for: activeSession.duration,
+            powerSource: PowerSourceMonitor.current()
+        )
+    }
+
+    private func stopSessionForPolicyViolation(_ policyError: Error) {
+        do {
+            try powerAssertions.stop()
+            clearSessionState()
+        } catch {
+            showError(error)
+            return
+        }
+
+        showError(policyError)
+    }
+
     private func scheduleTimer() {
         updateTimer?.invalidate()
-        updateTimer = Timer.scheduledTimer(
+        let timer = Timer(
             timeInterval: 1,
             target: self,
             selector: #selector(tick),
             userInfo: nil,
             repeats: true
         )
-        RunLoop.main.add(updateTimer!, forMode: .common)
+        updateTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     private func clearSessionState() {
@@ -180,6 +239,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(disabledMenuItem("Running: \(activeSession.sourceLabel) - \(activeSession.duration.label)"))
             menu.addItem(disabledMenuItem("Assertions: \(activeSession.assertionSummary)"))
             menu.addItem(disabledMenuItem("Reason: \(activeSession.reason)"))
+            menu.addItem(disabledMenuItem("Safety: \(safetyNotes(for: activeSession).joined(separator: ", "))"))
             menu.addItem(menuItem("Stop", action: #selector(stopSessionFromMenu)))
         } else {
             if let lastErrorMessage {
@@ -198,6 +258,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         displayItem.state = keepDisplayAwake ? .on : .off
         menu.addItem(displayItem)
 
+        let batteryItem = menuItem("Allow Long Sessions on Battery", action: #selector(toggleBatteryPolicy))
+        batteryItem.state = allowLongSessionsOnBattery ? .on : .off
+        menu.addItem(batteryItem)
+        menu.addItem(disabledMenuItem("Lid close depends on macOS power/display policy"))
+
         menu.addItem(.separator())
         menu.addItem(menuItem("Show Caff", action: #selector(showControlWindow)))
         menu.addItem(menuItem("Quit Caff", action: #selector(quit), keyEquivalent: "q"))
@@ -211,7 +276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 350),
+            contentRect: NSRect(x: 0, y: 0, width: 430, height: 430),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -242,6 +307,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configureProofLabel(reasonProofLabel)
         configureProofLabel(startedProofLabel)
         configureProofLabel(errorProofLabel)
+        configureSecondaryLabel(policyStatusLabel)
+        configureSecondaryLabel(lidLimitLabel)
 
         let startGrid = NSGridView(views: [
             [
@@ -260,6 +327,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         displayAwakeCheckbox.target = self
         displayAwakeCheckbox.action = #selector(toggleDisplayAwake)
 
+        batteryPolicyCheckbox.target = self
+        batteryPolicyCheckbox.action = #selector(toggleBatteryPolicy)
+
         stopButton.target = self
         stopButton.action = #selector(stopSessionFromMenu)
         stopButton.bezelStyle = .rounded
@@ -268,13 +338,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             titleLabel,
             windowStatusLabel,
             proofStack,
+            policyStatusLabel,
+            lidLimitLabel,
             startGrid,
             displayAwakeCheckbox,
+            batteryPolicyCheckbox,
             stopButton
         ])
         stack.orientation = .vertical
         stack.alignment = .centerX
-        stack.spacing = 14
+        stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         let contentView = NSView()
@@ -286,6 +359,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -24),
             stack.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             proofStack.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            policyStatusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            lidLimitLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
             startGrid.widthAnchor.constraint(equalTo: stack.widthAnchor),
             stopButton.widthAnchor.constraint(equalTo: stack.widthAnchor)
         ])
@@ -315,6 +390,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             reasonProofLabel.stringValue = "Reason: \(activeSession.reason)"
             startedProofLabel.stringValue = "Started: \(formatDate(activeSession.startedAt))"
             errorProofLabel.stringValue = activeSession.errorMessage.map { "Error: \($0)" } ?? ""
+            policyStatusLabel.stringValue = "Safety: \(safetyNotes(for: activeSession).joined(separator: ", "))"
         } else {
             statusText = lastErrorMessage == nil ? "Off" : "Error"
             sourceProofLabel.stringValue = "Source: None"
@@ -322,10 +398,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             reasonProofLabel.stringValue = "Reason: None"
             startedProofLabel.stringValue = "Started: None"
             errorProofLabel.stringValue = lastErrorMessage.map { "Error: \($0)" } ?? ""
+            policyStatusLabel.stringValue = "Safety: \(currentSafetyPolicy().summary)"
         }
 
         windowStatusLabel.stringValue = statusText
         displayAwakeCheckbox.state = keepDisplayAwake ? .on : .off
+        batteryPolicyCheckbox.state = allowLongSessionsOnBattery ? .on : .off
         stopButton.isEnabled = isRunning
         for button in startButtons {
             button.isEnabled = !isRunning
@@ -337,6 +415,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         label.textColor = .secondaryLabelColor
         label.lineBreakMode = .byTruncatingMiddle
         label.maximumNumberOfLines = 1
+    }
+
+    private func configureSecondaryLabel(_ label: NSTextField) {
+        label.font = .systemFont(ofSize: 12)
+        label.textColor = .secondaryLabelColor
+        label.alignment = .center
+        label.maximumNumberOfLines = 2
+        label.lineBreakMode = .byWordWrapping
     }
 
     private func formatDate(_ date: Date) -> String {
