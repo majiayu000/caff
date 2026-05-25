@@ -79,6 +79,17 @@ let cappedSession = WakeSession(
 )
 check(cappedSession.compactStatus(now: startDate) == "4h", "policy-capped indefinite sessions should show capped time")
 
+let historyEntry = SessionHistoryEntry(
+    session: proofSession,
+    endedAt: now.addingTimeInterval(120),
+    result: .stopped
+)
+check(historyEntry.source == "Process", "history should record session source")
+check(historyEntry.reason == "codex is running", "history should record session reason")
+check(historyEntry.assertionKinds == ["PreventUserIdleSystemSleep", "NoDisplaySleepAssertion"], "history should record assertion proof")
+check(historyEntry.result == .stopped, "history should record session result")
+check(historyEntry.summary == "Stopped: Process - 1 Hour", "history should expose a compact summary")
+
 do {
     try policy.validate(duration: .oneHour, powerSource: .batteryPower)
     failures.append("long battery sessions should be blocked by default")

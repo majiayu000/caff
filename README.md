@@ -36,6 +36,12 @@ Caff can watch configured workspace paths for deterministic activity signals:
 
 Workspace triggers are opt-in and require explicit paths. When activity stops, Caff keeps the session alive for the configured grace period before stopping it.
 
+## Notifications and History
+
+Notifications are opt-in. When enabled, Caff can notify on session start, stop, timeout, policy stop, and errors.
+Local history is stored in Application Support and records source, reason, duration, assertion kinds, timestamps, and result.
+History starts empty and can be cleared from the menu or control window.
+
 ## Run
 
 ```bash
