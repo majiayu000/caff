@@ -98,6 +98,56 @@ do {
     failures.append("explicitly allowed long battery sessions should pass validation: \(error)")
 }
 
+let processTriggerConfig = ProcessTriggerConfiguration(
+    identifiers: ["codex", "python"],
+    gracePeriodSeconds: 10
+)
+let processTrigger = ProcessTriggerEvaluator(configuration: processTriggerConfig)
+let processCandidates = [
+    ProcessCandidate(pid: 10, processName: "Codex", bundleIdentifier: "com.openai.codex", commandLine: "/Applications/Codex.app/Contents/MacOS/Codex"),
+    ProcessCandidate(pid: 11, processName: "python3.12", commandLine: "/opt/homebrew/bin/python3.12 worker.py"),
+    ProcessCandidate(pid: 12, processName: "zsh", commandLine: "/bin/zsh")
+]
+let processMatches = processTrigger.match(candidates: processCandidates)
+check(processMatches.count == 2, "process trigger should match process names and versioned names once per process")
+check(processMatches.contains { $0.identifier == "codex" && $0.candidate.pid == 10 }, "process trigger should match codex by name")
+check(processMatches.contains { $0.identifier == "python" && $0.candidate.pid == 11 }, "process trigger should match versioned python processes")
+
+let bundleTrigger = ProcessTriggerEvaluator(
+    configuration: ProcessTriggerConfiguration(identifiers: ["com.openai.codex"])
+)
+check(
+    bundleTrigger.match(candidates: processCandidates).contains { $0.identifier == "com.openai.codex" && $0.candidate.pid == 10 },
+    "process trigger should match Codex by bundle identifier"
+)
+
+let triggerStart = Date(timeIntervalSince1970: 5_000)
+let (activeEvaluation, activeState) = processTrigger.evaluate(
+    candidates: [processCandidates[0]],
+    previousState: .inactive,
+    now: triggerStart
+)
+check(activeEvaluation.isKeepingAwake, "matching process should keep awake")
+check(!activeEvaluation.isInGracePeriod, "matching process should not be in grace period")
+check(activeEvaluation.reason == "Process trigger: Codex pid 10", "process trigger should explain the triggering process")
+
+let (graceEvaluation, graceState) = processTrigger.evaluate(
+    candidates: [],
+    previousState: activeState,
+    now: triggerStart.addingTimeInterval(5)
+)
+check(graceEvaluation.isKeepingAwake, "process trigger should keep awake during grace period")
+check(graceEvaluation.isInGracePeriod, "process trigger should report grace period")
+check(graceState == activeState, "grace period should preserve the last active match")
+
+let (inactiveEvaluation, inactiveState) = processTrigger.evaluate(
+    candidates: [],
+    previousState: activeState,
+    now: triggerStart.addingTimeInterval(11)
+)
+check(!inactiveEvaluation.isKeepingAwake, "process trigger should stop after grace expires")
+check(inactiveState == .inactive, "expired process trigger should reset state")
+
 do {
     let controller = PowerAssertionController()
     try controller.start(options: SessionOptions(duration: .thirtyMinutes, keepDisplayAwake: true))
