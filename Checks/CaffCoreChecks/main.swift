@@ -46,6 +46,31 @@ let options = SessionOptions(duration: .oneHour)
 check(options.keepDisplayAwake == false, "display sleep prevention should be opt-in")
 check(options.reason == "Caff is keeping this Mac awake", "default assertion reason should be stable")
 
+let policy = SafetyPolicy.standard
+check(policy.maximumSessionMinutes == 240, "standard policy should cap sessions at four hours")
+check(policy.stopGracePeriodSeconds == 60, "standard policy should keep a deterministic stop grace period")
+check(policy.effectiveEndDate(for: .indefinitely, startedAt: startDate) == Date(timeIntervalSince1970: 15_400), "indefinite sessions should be capped by policy")
+check(policy.sessionNotes(for: .indefinitely, powerSource: .acPower).contains("Indefinite is capped"), "policy notes should surface capped indefinite sessions")
+
+do {
+    try policy.validate(duration: .oneHour, powerSource: .batteryPower)
+    failures.append("long battery sessions should be blocked by default")
+} catch let error as SafetyPolicyError {
+    check(
+        error == .longSessionOnBattery(durationLabel: "1 Hour", thresholdMinutes: 60),
+        "battery policy should report the blocked duration"
+    )
+} catch {
+    failures.append("battery policy failed with unexpected error: \(error)")
+}
+
+let permissivePolicy = SafetyPolicy(allowLongSessionsOnBattery: true)
+do {
+    try permissivePolicy.validate(duration: .fourHours, powerSource: .batteryPower)
+} catch {
+    failures.append("explicitly allowed long battery sessions should pass validation: \(error)")
+}
+
 do {
     let controller = PowerAssertionController()
     try controller.start(options: SessionOptions(duration: .thirtyMinutes, keepDisplayAwake: true))
