@@ -148,6 +148,42 @@ let (inactiveEvaluation, inactiveState) = processTrigger.evaluate(
 check(!inactiveEvaluation.isKeepingAwake, "process trigger should stop after grace expires")
 check(inactiveState == .inactive, "expired process trigger should reset state")
 
+let workspaceTriggerConfig = WorkspaceTriggerConfiguration(
+    paths: ["/tmp/caff-workspace"],
+    recentActivityWindowSeconds: 300,
+    gracePeriodSeconds: 10
+)
+let workspaceTrigger = WorkspaceTriggerEvaluator(configuration: workspaceTriggerConfig)
+let workspaceActivity = WorkspaceActivity(
+    path: "/tmp/caff-workspace",
+    signal: .gitIndexLock
+)
+let (workspaceActive, workspaceState) = workspaceTrigger.evaluate(
+    activities: [workspaceActivity],
+    previousState: .inactive,
+    now: triggerStart
+)
+check(workspaceTriggerConfig.normalizedPaths == ["/tmp/caff-workspace"], "workspace trigger should normalize configured paths")
+check(workspaceActive.isKeepingAwake, "workspace activity should keep awake")
+check(workspaceActive.reason == "Workspace trigger: caff-workspace: .git/index.lock", "workspace trigger should explain the activity signal")
+
+let (workspaceGrace, workspaceGraceState) = workspaceTrigger.evaluate(
+    activities: [],
+    previousState: workspaceState,
+    now: triggerStart.addingTimeInterval(5)
+)
+check(workspaceGrace.isKeepingAwake, "workspace trigger should keep awake during grace period")
+check(workspaceGrace.isInGracePeriod, "workspace trigger should report grace period")
+check(workspaceGraceState == workspaceState, "workspace grace should preserve last activity")
+
+let (workspaceInactive, workspaceInactiveState) = workspaceTrigger.evaluate(
+    activities: [],
+    previousState: workspaceState,
+    now: triggerStart.addingTimeInterval(11)
+)
+check(!workspaceInactive.isKeepingAwake, "workspace trigger should stop after grace expires")
+check(workspaceInactiveState == .inactive, "expired workspace trigger should reset state")
+
 do {
     let controller = PowerAssertionController()
     try controller.start(options: SessionOptions(duration: .thirtyMinutes, keepDisplayAwake: true))

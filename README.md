@@ -27,6 +27,15 @@ The default list is `codex, claude, node, python, cargo, swift`.
 When a matching process exists, Caff starts a process-sourced keep-awake session and shows the triggering process in the status proof.
 When no match remains, Caff keeps the session alive for the configured grace period before stopping it.
 
+## Workspace Trigger
+
+Caff can watch configured workspace paths for deterministic activity signals:
+
+- `.git/index.lock`
+- recently modified regular files
+
+Workspace triggers are opt-in and require explicit paths. When activity stops, Caff keeps the session alive for the configured grace period before stopping it.
+
 ## Run
 
 ```bash

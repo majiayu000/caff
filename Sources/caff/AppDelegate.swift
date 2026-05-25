@@ -19,6 +19,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         string: ProcessTriggerConfiguration.agentDefaults.identifiers.joined(separator: ", ")
     )
     private let processTriggerStatusLabel = NSTextField(labelWithString: "Process trigger idle")
+    private let workspaceTriggerCheckbox = NSButton(checkboxWithTitle: "Auto-start for workspace activity", target: nil, action: nil)
+    private let workspacePathsField = NSTextField(string: "")
+    private let workspaceTriggerStatusLabel = NSTextField(labelWithString: "Workspace trigger idle")
     private let stopButton = NSButton(title: "Stop", target: nil, action: nil)
     private var startButtons: [NSButton] = []
     private var controlWindow: NSWindow?
@@ -26,11 +29,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastErrorMessage: String?
     private var updateTimer: Timer?
     private var processTriggerTimer: Timer?
+    private var workspaceTriggerTimer: Timer?
     private var processTriggerState = ProcessTriggerState.inactive
+    private var workspaceTriggerState = WorkspaceTriggerState.inactive
     private var processTriggerSummary = "Process trigger idle"
+    private var workspaceTriggerSummary = "Workspace trigger idle"
     private var keepDisplayAwake = false
     private var allowLongSessionsOnBattery = false
     private var processTriggerEnabled = false
+    private var workspaceTriggerEnabled = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -43,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         updateTimer?.invalidate()
         processTriggerTimer?.invalidate()
+        workspaceTriggerTimer?.invalidate()
         do {
             try powerAssertions.stop()
         } catch {
@@ -125,6 +133,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateStatusTitle()
     }
 
+    @objc private func toggleWorkspaceTrigger() {
+        workspaceTriggerEnabled.toggle()
+        workspaceTriggerState = .inactive
+        workspaceTriggerSummary = workspaceTriggerEnabled ? "Workspace trigger watching" : "Workspace trigger idle"
+
+        if workspaceTriggerEnabled {
+            scheduleWorkspaceTriggerTimer()
+            pollWorkspaceTrigger()
+        } else {
+            workspaceTriggerTimer?.invalidate()
+            workspaceTriggerTimer = nil
+            if activeSession?.source == .workspace {
+                stopSession()
+            }
+        }
+
+        rebuildMenu()
+        updateStatusTitle()
+    }
+
     @objc private func pollProcessTrigger() {
         guard processTriggerEnabled else {
             return
@@ -152,6 +180,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         } else if activeSession?.source == .process {
+            stopSession()
+        }
+
+        rebuildMenu()
+        updateStatusTitle()
+    }
+
+    @objc private func pollWorkspaceTrigger() {
+        guard workspaceTriggerEnabled else {
+            return
+        }
+
+        let configuration = currentWorkspaceTriggerConfiguration()
+        let evaluator = WorkspaceTriggerEvaluator(configuration: configuration)
+        let (evaluation, nextState) = evaluator.evaluate(
+            activities: WorkspaceActivityScanner.activities(configuration: configuration),
+            previousState: workspaceTriggerState
+        )
+        workspaceTriggerState = nextState
+        workspaceTriggerSummary = evaluation.summary
+
+        if evaluation.isKeepingAwake {
+            if activeSession == nil {
+                let started = startSession(
+                    duration: .indefinitely,
+                    source: .workspace,
+                    reason: evaluation.reason
+                )
+                if !started {
+                    workspaceTriggerEnabled = false
+                    workspaceTriggerTimer?.invalidate()
+                    workspaceTriggerTimer = nil
+                }
+            }
+        } else if activeSession?.source == .workspace {
             stopSession()
         }
 
@@ -262,6 +325,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
+    private func currentWorkspaceTriggerConfiguration() -> WorkspaceTriggerConfiguration {
+        let paths = workspacePathsField.stringValue
+            .split { character in
+                character == "," || character == "\n"
+            }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        return WorkspaceTriggerConfiguration(
+            paths: paths,
+            recentActivityWindowSeconds: 300,
+            gracePeriodSeconds: currentSafetyPolicy().stopGracePeriodSeconds
+        )
+    }
+
     private func enforceBatteryPolicy(_ activeSession: WakeSession) -> Bool {
         do {
             try currentSafetyPolicy().validate(
@@ -320,6 +398,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         RunLoop.main.add(timer, forMode: .common)
     }
 
+    private func scheduleWorkspaceTriggerTimer() {
+        workspaceTriggerTimer?.invalidate()
+        let timer = Timer(
+            timeInterval: 15,
+            target: self,
+            selector: #selector(pollWorkspaceTrigger),
+            userInfo: nil,
+            repeats: true
+        )
+        workspaceTriggerTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
     private func clearSessionState() {
         activeSession = nil
         updateTimer?.invalidate()
@@ -370,6 +461,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         processItem.state = processTriggerEnabled ? .on : .off
         menu.addItem(processItem)
         menu.addItem(disabledMenuItem(processTriggerSummary))
+        let workspaceItem = menuItem("Auto Start for Workspace Activity", action: #selector(toggleWorkspaceTrigger))
+        workspaceItem.state = workspaceTriggerEnabled ? .on : .off
+        menu.addItem(workspaceItem)
+        menu.addItem(disabledMenuItem(workspaceTriggerSummary))
         menu.addItem(disabledMenuItem("Lid close depends on macOS power/display policy"))
 
         menu.addItem(.separator())
@@ -385,7 +480,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 430, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 450, height: 620),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -445,6 +540,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         processIdentifiersField.font = .systemFont(ofSize: 12)
         configureSecondaryLabel(processTriggerStatusLabel)
 
+        workspaceTriggerCheckbox.target = self
+        workspaceTriggerCheckbox.action = #selector(toggleWorkspaceTrigger)
+        workspacePathsField.placeholderString = "~/Desktop/code, /path/to/workspace"
+        workspacePathsField.font = .systemFont(ofSize: 12)
+        configureSecondaryLabel(workspaceTriggerStatusLabel)
+
         stopButton.target = self
         stopButton.action = #selector(stopSessionFromMenu)
         stopButton.bezelStyle = .rounded
@@ -461,6 +562,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             processTriggerCheckbox,
             processIdentifiersField,
             processTriggerStatusLabel,
+            workspaceTriggerCheckbox,
+            workspacePathsField,
+            workspaceTriggerStatusLabel,
             stopButton
         ])
         stack.orientation = .vertical
@@ -482,6 +586,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             startGrid.widthAnchor.constraint(equalTo: stack.widthAnchor),
             processIdentifiersField.widthAnchor.constraint(equalTo: stack.widthAnchor),
             processTriggerStatusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            workspacePathsField.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            workspaceTriggerStatusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
             stopButton.widthAnchor.constraint(equalTo: stack.widthAnchor)
         ])
 
@@ -526,6 +632,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         batteryPolicyCheckbox.state = allowLongSessionsOnBattery ? .on : .off
         processTriggerCheckbox.state = processTriggerEnabled ? .on : .off
         processTriggerStatusLabel.stringValue = processTriggerSummary
+        workspaceTriggerCheckbox.state = workspaceTriggerEnabled ? .on : .off
+        workspaceTriggerStatusLabel.stringValue = workspaceTriggerSummary
         stopButton.isEnabled = isRunning
         for button in startButtons {
             button.isEnabled = !isRunning
