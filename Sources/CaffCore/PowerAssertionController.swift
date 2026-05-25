@@ -5,6 +5,24 @@ public enum PowerAssertionKind: String, CaseIterable, Sendable {
     case idleSystemSleep
     case displaySleep
 
+    public var displayName: String {
+        switch self {
+        case .idleSystemSleep:
+            return "PreventUserIdleSystemSleep"
+        case .displaySleep:
+            return "NoDisplaySleepAssertion"
+        }
+    }
+
+    var sortOrder: Int {
+        switch self {
+        case .idleSystemSleep:
+            return 0
+        case .displaySleep:
+            return 1
+        }
+    }
+
     var assertionType: CFString {
         switch self {
         case .idleSystemSleep:

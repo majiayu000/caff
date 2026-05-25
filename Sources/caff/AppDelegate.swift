@@ -1,20 +1,21 @@
 import AppKit
 import CaffCore
 
-private struct ActiveSession {
-    let duration: SessionDuration
-    let endDate: Date?
-}
-
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let powerAssertions = PowerAssertionController()
     private let windowStatusLabel = NSTextField(labelWithString: "Off")
+    private let sourceProofLabel = NSTextField(labelWithString: "Source: None")
+    private let assertionProofLabel = NSTextField(labelWithString: "Assertions: None")
+    private let reasonProofLabel = NSTextField(labelWithString: "Reason: None")
+    private let startedProofLabel = NSTextField(labelWithString: "Started: None")
+    private let errorProofLabel = NSTextField(labelWithString: "")
     private let displayAwakeCheckbox = NSButton(checkboxWithTitle: "Keep display awake", target: nil, action: nil)
     private let stopButton = NSButton(title: "Stop", target: nil, action: nil)
     private var startButtons: [NSButton] = []
     private var controlWindow: NSWindow?
-    private var activeSession: ActiveSession?
+    private var activeSession: WakeSession?
+    private var lastErrorMessage: String?
     private var updateTimer: Timer?
     private var keepDisplayAwake = false
 
@@ -63,7 +64,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let activeSession {
             do {
-                try powerAssertions.start(options: options(for: activeSession.duration))
+                try powerAssertions.start(options: options(for: activeSession))
+                self.activeSession = activeSession.updatingAssertions(
+                    powerAssertions.activeAssertions,
+                    keepDisplayAwake: keepDisplayAwake
+                )
+                lastErrorMessage = nil
             } catch {
                 keepDisplayAwake.toggle()
                 clearSessionState()
@@ -95,13 +101,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startSession(duration: SessionDuration) {
         let startedAt = Date()
+        let sessionOptions = options(for: duration)
 
         do {
-            try powerAssertions.start(options: options(for: duration))
-            activeSession = ActiveSession(
-                duration: duration,
-                endDate: duration.endDate(from: startedAt)
+            try powerAssertions.start(options: sessionOptions)
+            activeSession = WakeSession(
+                options: sessionOptions,
+                startedAt: startedAt,
+                activeAssertions: powerAssertions.activeAssertions
             )
+            lastErrorMessage = nil
             scheduleTimer()
             rebuildMenu()
             updateStatusTitle()
@@ -114,6 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             try powerAssertions.stop()
             clearSessionState()
+            lastErrorMessage = nil
             rebuildMenu()
             updateStatusTitle()
         } catch {
@@ -123,6 +133,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func options(for duration: SessionDuration) -> SessionOptions {
         SessionOptions(duration: duration, keepDisplayAwake: keepDisplayAwake)
+    }
+
+    private func options(for session: WakeSession) -> SessionOptions {
+        SessionOptions(
+            duration: session.duration,
+            source: session.source,
+            keepDisplayAwake: keepDisplayAwake,
+            reason: session.reason
+        )
     }
 
     private func scheduleTimer() {
@@ -145,13 +164,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateStatusTitle() {
         guard let activeSession else {
-            statusItem.button?.title = "CAFF"
+            statusItem.button?.title = lastErrorMessage == nil ? "CAFF" : "CAFF !"
             updateControlWindow()
             return
         }
 
-        let remaining = RemainingTimeFormatter.compactRemaining(until: activeSession.endDate)
-        statusItem.button?.title = "CAFF \(remaining)"
+        statusItem.button?.title = "CAFF \(activeSession.compactStatus())"
         updateControlWindow()
     }
 
@@ -159,11 +177,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
 
         if let activeSession {
-            let status = NSMenuItem(title: "Running: \(activeSession.duration.label)", action: nil, keyEquivalent: "")
-            status.isEnabled = false
-            menu.addItem(status)
+            menu.addItem(disabledMenuItem("Running: \(activeSession.sourceLabel) - \(activeSession.duration.label)"))
+            menu.addItem(disabledMenuItem("Assertions: \(activeSession.assertionSummary)"))
+            menu.addItem(disabledMenuItem("Reason: \(activeSession.reason)"))
             menu.addItem(menuItem("Stop", action: #selector(stopSessionFromMenu)))
         } else {
+            if let lastErrorMessage {
+                menu.addItem(disabledMenuItem("Last error: \(lastErrorMessage)"))
+                menu.addItem(.separator())
+            }
             menu.addItem(menuItem("Start Indefinitely", action: #selector(startIndefinitely)))
             menu.addItem(menuItem("Start 30 Minutes", action: #selector(startThirtyMinutes)))
             menu.addItem(menuItem("Start 1 Hour", action: #selector(startOneHour)))
@@ -189,7 +211,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 360, height: 260),
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 350),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -203,6 +225,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         windowStatusLabel.font = .systemFont(ofSize: 15, weight: .medium)
         windowStatusLabel.alignment = .center
+
+        let proofStack = NSStackView(views: [
+            sourceProofLabel,
+            assertionProofLabel,
+            reasonProofLabel,
+            startedProofLabel,
+            errorProofLabel
+        ])
+        proofStack.orientation = .vertical
+        proofStack.alignment = .leading
+        proofStack.spacing = 4
+        proofStack.translatesAutoresizingMaskIntoConstraints = false
+        configureProofLabel(sourceProofLabel)
+        configureProofLabel(assertionProofLabel)
+        configureProofLabel(reasonProofLabel)
+        configureProofLabel(startedProofLabel)
+        configureProofLabel(errorProofLabel)
 
         let startGrid = NSGridView(views: [
             [
@@ -228,6 +267,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let stack = NSStackView(views: [
             titleLabel,
             windowStatusLabel,
+            proofStack,
             startGrid,
             displayAwakeCheckbox,
             stopButton
@@ -245,6 +285,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
             stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -24),
             stack.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            proofStack.widthAnchor.constraint(equalTo: stack.widthAnchor),
             startGrid.widthAnchor.constraint(equalTo: stack.widthAnchor),
             stopButton.widthAnchor.constraint(equalTo: stack.widthAnchor)
         ])
@@ -267,10 +308,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let statusText: String
 
         if let activeSession {
-            let remaining = RemainingTimeFormatter.compactRemaining(until: activeSession.endDate)
-            statusText = activeSession.endDate == nil ? "On" : "On: \(remaining)"
+            let compactStatus = activeSession.compactStatus()
+            statusText = activeSession.endDate == nil ? "On" : "On: \(compactStatus)"
+            sourceProofLabel.stringValue = "Source: \(activeSession.sourceLabel)"
+            assertionProofLabel.stringValue = "Assertions: \(activeSession.assertionSummary)"
+            reasonProofLabel.stringValue = "Reason: \(activeSession.reason)"
+            startedProofLabel.stringValue = "Started: \(formatDate(activeSession.startedAt))"
+            errorProofLabel.stringValue = activeSession.errorMessage.map { "Error: \($0)" } ?? ""
         } else {
-            statusText = "Off"
+            statusText = lastErrorMessage == nil ? "Off" : "Error"
+            sourceProofLabel.stringValue = "Source: None"
+            assertionProofLabel.stringValue = "Assertions: None"
+            reasonProofLabel.stringValue = "Reason: None"
+            startedProofLabel.stringValue = "Started: None"
+            errorProofLabel.stringValue = lastErrorMessage.map { "Error: \($0)" } ?? ""
         }
 
         windowStatusLabel.stringValue = statusText
@@ -281,6 +332,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func configureProofLabel(_ label: NSTextField) {
+        label.font = .systemFont(ofSize: 12)
+        label.textColor = .secondaryLabelColor
+        label.lineBreakMode = .byTruncatingMiddle
+        label.maximumNumberOfLines = 1
+    }
+
+    private func formatDate(_ date: Date) -> String {
+        DateFormatter.localizedString(from: date, dateStyle: .none, timeStyle: .medium)
+    }
+
+    private func disabledMenuItem(_ title: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        return item
+    }
+
     private func menuItem(_ title: String, action: Selector?, keyEquivalent: String = "") -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
         item.target = self
@@ -288,10 +356,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showError(_ error: Error) {
+        lastErrorMessage = String(describing: error)
+        rebuildMenu()
+        updateStatusTitle()
+
         let alert = NSAlert()
         alert.alertStyle = .critical
         alert.messageText = "Caff could not update the wake session"
-        alert.informativeText = String(describing: error)
+        alert.informativeText = lastErrorMessage ?? "Unknown error"
         alert.runModal()
     }
 }
