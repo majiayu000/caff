@@ -44,7 +44,20 @@ check(
 
 let options = SessionOptions(duration: .oneHour)
 check(options.keepDisplayAwake == false, "display sleep prevention should be opt-in")
+check(options.source == .manual, "manual should be the default session source")
 check(options.reason == "Caff is keeping this Mac awake", "default assertion reason should be stable")
+
+let proofSession = WakeSession(
+    options: SessionOptions(duration: .oneHour, source: .process, keepDisplayAwake: true, reason: "codex is running"),
+    startedAt: now,
+    activeAssertions: [.displaySleep, .idleSystemSleep]
+)
+check(proofSession.sourceLabel == "Process", "session should expose source label")
+check(
+    proofSession.assertionSummary == "PreventUserIdleSystemSleep, NoDisplaySleepAssertion",
+    "session should expose stable assertion proof"
+)
+check(proofSession.compactStatus(now: now) == "1h", "session should expose compact remaining status")
 
 do {
     let controller = PowerAssertionController()

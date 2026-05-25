@@ -27,6 +27,22 @@ open dist/Caff.app
 The generated app opens a small control window and also keeps a `CAFF` menu bar item.
 The menu includes `Show Caff` if the window is closed.
 
+## Status Proof
+
+When a wake session is active, Caff shows:
+
+- session source, currently `Manual`
+- active assertion types
+- assertion reason
+- start time
+- remaining time for timed sessions
+
+The first agent-first trigger should reuse this proof model instead of adding a separate on/off state.
+
+## Naming
+
+`Caff` is intentionally short and CLI-friendly. It keeps the connection to macOS `caffeinate` without using the generic name `Cafe`.
+
 ## Verify
 
 ```bash
