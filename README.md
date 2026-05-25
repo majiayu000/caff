@@ -92,4 +92,5 @@ The first agent-first trigger should reuse this proof model instead of adding a 
 swift test
 swift build
 swift run caff-core-checks
+./scripts/build_app.sh
 ```
