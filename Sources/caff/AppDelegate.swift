@@ -1,7 +1,7 @@
 import AppKit
 import CaffCore
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate {
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let powerAssertions = PowerAssertionController()
     let windowStatusLabel = NSTextField(labelWithString: "Off")
@@ -25,7 +25,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     )
     let processTriggerPillLabel = NSTextField(labelWithString: "Disabled")
     let processTriggerStatusLabel = NSTextField(labelWithString: "Process trigger idle")
-    let processChipsStack = NSStackView()
     let agentActivityStatusLabel = NSTextField(labelWithString: "Agent activity idle")
     let workspaceTriggerCheckbox = NSButton(checkboxWithTitle: "Auto-start for workspace activity", target: nil, action: nil)
     let workspacePathsField = NSTextField(string: "")

@@ -137,7 +137,6 @@ extension AppDelegate {
         processTriggerPillLabel.stringValue = processTriggerEnabled ? "Watching" : "Disabled"
         processTriggerPillLabel.textColor = processTriggerEnabled ? CaffPanelStyle.good : CaffPanelStyle.inkTertiary
         processTriggerStatusLabel.stringValue = processTriggerSummary
-        updateProcessChips()
         agentActivityStatusLabel.stringValue = agentActivitySummary
         workspaceTriggerCheckbox.state = workspaceTriggerEnabled ? .on : .off
         workspaceTriggerPillLabel.stringValue = workspaceTriggerEnabled ? "Watching" : "Disabled"
@@ -203,7 +202,6 @@ extension AppDelegate {
         }
 
         processIdentifiersField.placeholderString = "codex, claude, node, python, cargo, swift"
-        processIdentifiersField.delegate = self
         workspacePathsField.placeholderString = "~/Desktop/code, /path/to/workspace"
         for field in [processIdentifiersField, workspacePathsField] {
             field.font = .systemFont(ofSize: 12)
@@ -454,7 +452,6 @@ extension AppDelegate {
                 control: processTriggerCheckbox,
                 trailing: statusPillView(processTriggerPillLabel),
                 views: [
-                    processChipsView(),
                     insetView(processIdentifiersField, top: 2, bottom: 8),
                     insetView(processTriggerStatusLabel, top: 0, bottom: 4),
                     insetView(agentActivityStatusLabel, top: 0, bottom: 12)
@@ -638,63 +635,6 @@ extension AppDelegate {
             view.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -bottom)
         ])
         return container
-    }
-
-    private func processChipsView() -> NSView {
-        processChipsStack.orientation = .horizontal
-        processChipsStack.alignment = .centerY
-        processChipsStack.spacing = 6
-        processChipsStack.edgeInsets = NSEdgeInsets(top: 4, left: 18, bottom: 8, right: 18)
-        updateProcessChips()
-        return processChipsStack
-    }
-
-    private func updateProcessChips() {
-        for view in processChipsStack.arrangedSubviews {
-            processChipsStack.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
-
-        let identifiers = processIdentifiersField.stringValue
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        let visibleIdentifiers = identifiers.isEmpty ? ProcessTriggerConfiguration.agentDefaults.identifiers : identifiers
-        for identifier in visibleIdentifiers {
-            processChipsStack.addArrangedSubview(chipLabel(identifier))
-        }
-    }
-
-    private func chipLabel(_ text: String) -> NSView {
-        let label = NSTextField(labelWithString: text)
-        label.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        label.textColor = CaffPanelStyle.inkSecondary
-        label.alignment = .center
-
-        let container = NSView()
-        container.translatesAutoresizingMaskIntoConstraints = false
-        container.wantsLayer = true
-        container.layer?.cornerRadius = 6
-        container.layer?.backgroundColor = CaffPanelStyle.sunken.cgColor
-        container.layer?.borderWidth = 1
-        container.layer?.borderColor = CaffPanelStyle.lineStrong.cgColor
-        container.addSubview(label)
-        label.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            container.heightAnchor.constraint(equalToConstant: 26),
-            label.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
-            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14)
-        ])
-        return container
-    }
-
-    func controlTextDidChange(_ notification: Notification) {
-        guard notification.object as? NSTextField === processIdentifiersField else {
-            return
-        }
-
-        updateProcessChips()
     }
 
     private func configurePillLabel(_ label: NSTextField) {
