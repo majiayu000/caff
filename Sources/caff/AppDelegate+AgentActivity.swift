@@ -56,6 +56,24 @@ extension AppDelegate {
             return
         }
 
+        guard let state = agentActivityState,
+              let cooldownUntil = evaluation.cooldownUntil else {
+            cancelAgentActivityCooldown()
+            return
+        }
+
+        let sessionEndDate = agentActivitySessionEndDate(
+            state: state,
+            cooldownUntil: cooldownUntil
+        )
+        if sessionEndDate <= Date() {
+            cancelAgentActivityCooldown()
+            if activeSession?.source == .agent {
+                stopSession(result: .timedOut)
+            }
+            return
+        }
+
         if activeSession == nil {
             guard startSession(
                 duration: agentActivityDuration(),
@@ -84,10 +102,6 @@ extension AppDelegate {
             keepDisplayAwake: keepDisplayAwake,
             reason: evaluation.reason
         )
-        let effectiveEndDate = currentSafetyPolicy().effectiveEndDate(
-            for: options.duration,
-            startedAt: state.lastActivityAt
-        )
 
         do {
             if !powerAssertions.isRunning {
@@ -97,13 +111,27 @@ extension AppDelegate {
                 options: options,
                 startedAt: state.lastActivityAt,
                 activeAssertions: powerAssertions.activeAssertions,
-                endDate: min(cooldownUntil, effectiveEndDate ?? cooldownUntil)
+                endDate: agentActivitySessionEndDate(
+                    state: state,
+                    cooldownUntil: cooldownUntil
+                )
             )
             lastErrorMessage = nil
         } catch {
             cancelAgentActivityCooldown()
             showError(error)
         }
+    }
+
+    private func agentActivitySessionEndDate(
+        state: AgentActivityState,
+        cooldownUntil: Date
+    ) -> Date {
+        let effectiveEndDate = currentSafetyPolicy().effectiveEndDate(
+            for: agentActivityDuration(),
+            startedAt: state.lastActivityAt
+        )
+        return min(cooldownUntil, effectiveEndDate ?? cooldownUntil)
     }
 
     private func agentActivityDuration() -> SessionDuration {

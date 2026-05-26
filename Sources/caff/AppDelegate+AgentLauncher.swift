@@ -40,9 +40,7 @@ extension AppDelegate {
         if activeSession?.source == .launcher, agentRunner.isRunning {
             promptLauncherStopChoice()
         } else {
-            if activeSession?.source == .agent {
-                cancelAgentActivityCooldown()
-            }
+            cancelAgentActivityCooldown()
             stopSession(result: .stopped)
         }
     }
@@ -51,6 +49,7 @@ extension AppDelegate {
         guard activeSession?.source == .launcher else {
             return
         }
+        cancelAgentActivityCooldown()
         releasedLauncherSession = activeSession
         stopSession(result: .stopped, errorMessage: "Wake assertion released while command kept running")
         if let snapshot = agentRunner.activeSnapshot {
@@ -73,6 +72,7 @@ extension AppDelegate {
             return
         }
 
+        cancelAgentActivityCooldown()
         do {
             try agentRunner.terminate()
             agentLauncherPanel.setStatus("Terminating \(snapshot.commandName) pid \(snapshot.pid)")
