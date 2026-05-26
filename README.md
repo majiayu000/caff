@@ -99,6 +99,31 @@ open dist/Caff.app
 The generated app opens the control window and also keeps a `CAFF` menu bar item.
 The menu includes `Show Caff` if the window is closed.
 
+## Install and Open
+
+Caff does not require an installer. After building the app bundle, either run it from `dist`:
+
+```bash
+open dist/Caff.app
+```
+
+or copy it to Applications and open it like a normal Mac app:
+
+```bash
+ditto dist/Caff.app /Applications/Caff.app
+open -a Caff
+```
+
+When Caff is running, look for `CAFF` in the macOS menu bar. Use the menu bar item to open `Show Caff`, start or stop a wake session, change menu bar display mode, or quit the app.
+
+## Basic Use
+
+1. Open Caff.
+2. Click `Indefinitely`, `30 Minutes`, `1 Hour`, or `4 Hours` to keep the Mac awake.
+3. Leave `Keep display awake` off unless the screen itself must stay on.
+4. Click `Stop` from the control window or menu bar when the task is done.
+5. Enable process, workspace, or agent activity automation only when you want Caff to start and stop wake sessions automatically.
+
 ## Status Proof
 
 When a wake session is active, Caff shows:

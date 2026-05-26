@@ -84,6 +84,10 @@ extension AppDelegate {
             keepDisplayAwake: keepDisplayAwake,
             reason: evaluation.reason
         )
+        let effectiveEndDate = currentSafetyPolicy().effectiveEndDate(
+            for: options.duration,
+            startedAt: state.lastActivityAt
+        )
 
         do {
             if !powerAssertions.isRunning {
@@ -93,7 +97,7 @@ extension AppDelegate {
                 options: options,
                 startedAt: state.lastActivityAt,
                 activeAssertions: powerAssertions.activeAssertions,
-                endDate: cooldownUntil
+                endDate: min(cooldownUntil, effectiveEndDate ?? cooldownUntil)
             )
             lastErrorMessage = nil
         } catch {

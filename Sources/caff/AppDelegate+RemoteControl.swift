@@ -68,6 +68,7 @@ extension AppDelegate {
         case "start":
             try startRemoteSession(userInfo: userInfo)
         case "stop":
+            cancelAgentActivityCooldown()
             stopSession(result: .stopped)
         case "agent-touch":
             try touchRemoteAgentActivity(userInfo: userInfo)

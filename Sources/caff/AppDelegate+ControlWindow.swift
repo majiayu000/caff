@@ -1,4 +1,5 @@
 import AppKit
+import CaffCore
 
 extension AppDelegate {
     func makeControlWindowIfNeeded() -> NSWindow {
@@ -143,6 +144,7 @@ extension AppDelegate {
         processTriggerPillLabel.stringValue = processTriggerEnabled ? "Watching" : "Disabled"
         processTriggerPillLabel.textColor = processTriggerEnabled ? CaffPanelStyle.good : CaffPanelStyle.inkTertiary
         processTriggerStatusLabel.stringValue = processTriggerSummary
+        updateProcessChips()
         agentActivityStatusLabel.stringValue = agentActivitySummary
         workspaceTriggerCheckbox.state = workspaceTriggerEnabled ? .on : .off
         workspaceTriggerPillLabel.stringValue = workspaceTriggerEnabled ? "Watching" : "Disabled"
@@ -205,11 +207,11 @@ extension AppDelegate {
             workspaceTriggerCheckbox,
             notificationsCheckbox
         ] {
-            checkbox.title = ""
             checkbox.controlSize = .small
         }
 
         processIdentifiersField.placeholderString = "codex, claude, node, python, cargo, swift"
+        processIdentifiersField.delegate = self
         workspacePathsField.placeholderString = "~/Desktop/code, /path/to/workspace"
         for field in [processIdentifiersField, workspacePathsField] {
             field.font = .systemFont(ofSize: 12)
@@ -239,6 +241,7 @@ extension AppDelegate {
         if let activeSession {
             heroEyebrowLabel.stringValue = "CAFFEINATED - AWAKE"
             heroEyebrowLabel.textColor = CaffPanelStyle.good
+            heroStatusDot.layer?.backgroundColor = CaffPanelStyle.good.cgColor
             heroTitleLabel.stringValue = keepDisplayAwake ? "Display will stay on" : "Mac will stay awake"
             heroMetaLabel.stringValue = "\(activeSession.compactStatus()) - triggered by \(activeSession.sourceLabel.lowercased()) - \(activeSession.assertionSummary)"
             return
@@ -247,11 +250,13 @@ extension AppDelegate {
         if lastErrorMessage == nil {
             heroEyebrowLabel.stringValue = "READY - STANDBY"
             heroEyebrowLabel.textColor = CaffPanelStyle.inkTertiary
+            heroStatusDot.layer?.backgroundColor = CaffPanelStyle.inkTertiary.cgColor
             heroTitleLabel.stringValue = "Ready to keep awake"
             heroMetaLabel.stringValue = "No active power assertion - choose a duration or automation trigger"
         } else {
             heroEyebrowLabel.stringValue = "NEEDS ATTENTION"
             heroEyebrowLabel.textColor = CaffPanelStyle.bad
+            heroStatusDot.layer?.backgroundColor = CaffPanelStyle.bad.cgColor
             heroTitleLabel.stringValue = "Wake lock needs attention"
             heroMetaLabel.stringValue = lastErrorMessage ?? "Unknown error"
         }
@@ -264,17 +269,16 @@ extension AppDelegate {
         container.layer?.backgroundColor = CaffPanelStyle.heroTint.cgColor
 
         let iconView = heroIconView()
-        let statusDot = NSView()
-        statusDot.translatesAutoresizingMaskIntoConstraints = false
-        statusDot.wantsLayer = true
-        statusDot.layer?.cornerRadius = 5
-        statusDot.layer?.backgroundColor = CaffPanelStyle.good.cgColor
+        heroStatusDot.translatesAutoresizingMaskIntoConstraints = false
+        heroStatusDot.wantsLayer = true
+        heroStatusDot.layer?.cornerRadius = 5
+        heroStatusDot.layer?.backgroundColor = CaffPanelStyle.inkTertiary.cgColor
         NSLayoutConstraint.activate([
-            statusDot.widthAnchor.constraint(equalToConstant: 10),
-            statusDot.heightAnchor.constraint(equalToConstant: 10)
+            heroStatusDot.widthAnchor.constraint(equalToConstant: 10),
+            heroStatusDot.heightAnchor.constraint(equalToConstant: 10)
         ])
 
-        let statusRow = NSStackView(views: [statusDot, heroEyebrowLabel, statusBadgeView()])
+        let statusRow = NSStackView(views: [heroStatusDot, heroEyebrowLabel, statusBadgeView()])
         statusRow.orientation = .horizontal
         statusRow.alignment = .centerY
         statusRow.spacing = 8
@@ -560,17 +564,24 @@ extension AppDelegate {
         control: NSView,
         trailing: NSView? = nil
     ) -> NSView {
-        let titleLabel = NSTextField(labelWithString: title)
-        CaffPanelStyle.configureTitle(titleLabel)
         let subtitleLabel = NSTextField(labelWithString: subtitle)
         CaffPanelStyle.configureBody(subtitleLabel)
 
-        let labels = NSStackView(views: [titleLabel, subtitleLabel])
+        let labels: NSStackView
+        if let checkbox = control as? NSButton {
+            checkbox.title = title
+            checkbox.font = .systemFont(ofSize: 13, weight: .semibold)
+            labels = NSStackView(views: [checkbox, subtitleLabel])
+        } else {
+            let titleLabel = NSTextField(labelWithString: title)
+            CaffPanelStyle.configureTitle(titleLabel)
+            labels = NSStackView(views: [titleLabel, subtitleLabel])
+        }
         labels.orientation = .vertical
         labels.alignment = .leading
         labels.spacing = 3
 
-        var views: [NSView] = [control, labels]
+        var views: [NSView] = [labels]
         let spacer = NSView()
         views.append(spacer)
         if let trailing {
@@ -584,7 +595,6 @@ extension AppDelegate {
         row.translatesAutoresizingMaskIntoConstraints = false
         labels.setContentHuggingPriority(.defaultLow, for: .horizontal)
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        control.setContentHuggingPriority(.required, for: .horizontal)
         trailing?.setContentHuggingPriority(.required, for: .horizontal)
         return paddedRow(row)
     }
@@ -618,17 +628,28 @@ extension AppDelegate {
     }
 
     private func processChipsView() -> NSView {
+        processChipsStack.orientation = .horizontal
+        processChipsStack.alignment = .centerY
+        processChipsStack.spacing = 6
+        processChipsStack.edgeInsets = NSEdgeInsets(top: 10, left: 18, bottom: 8, right: 18)
+        updateProcessChips()
+        return processChipsStack
+    }
+
+    private func updateProcessChips() {
+        for view in processChipsStack.arrangedSubviews {
+            processChipsStack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+
         let identifiers = processIdentifiersField.stringValue
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        let chips = identifiers.map { chipLabel($0) }
-        let row = NSStackView(views: chips)
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 6
-        row.edgeInsets = NSEdgeInsets(top: 10, left: 18, bottom: 8, right: 18)
-        return row
+        let visibleIdentifiers = identifiers.isEmpty ? ProcessTriggerConfiguration.agentDefaults.identifiers : identifiers
+        for identifier in visibleIdentifiers {
+            processChipsStack.addArrangedSubview(chipLabel(identifier))
+        }
     }
 
     private func chipLabel(_ text: String) -> NSTextField {
@@ -642,6 +663,14 @@ extension AppDelegate {
         label.layer?.borderWidth = 1
         label.layer?.borderColor = CaffPanelStyle.lineStrong.cgColor
         return label
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        guard notification.object as? NSTextField === processIdentifiersField else {
+            return
+        }
+
+        updateProcessChips()
     }
 
     private func configurePillLabel(_ label: NSTextField) {

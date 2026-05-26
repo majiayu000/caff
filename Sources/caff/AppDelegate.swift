@@ -1,7 +1,7 @@
 import AppKit
 import CaffCore
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let powerAssertions = PowerAssertionController()
     let agentRunner = AgentProcessRunner()
@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let heroEyebrowLabel = NSTextField(labelWithString: "READY - STANDBY")
     let heroTitleLabel = NSTextField(labelWithString: "Ready to keep awake")
     let heroMetaLabel = NSTextField(labelWithString: "No active power assertion")
+    let heroStatusDot = NSView()
     let heroActionButton = NSButton(title: "Start", target: nil, action: nil)
     let sourceProofLabel = NSTextField(labelWithString: "Source: None")
     let assertionProofLabel = NSTextField(labelWithString: "Assertions: None")
@@ -25,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     )
     let processTriggerPillLabel = NSTextField(labelWithString: "Disabled")
     let processTriggerStatusLabel = NSTextField(labelWithString: "Process trigger idle")
+    let processChipsStack = NSStackView()
     let agentActivityStatusLabel = NSTextField(labelWithString: "Agent activity idle")
     let workspaceTriggerCheckbox = NSButton(checkboxWithTitle: "Auto-start for workspace activity", target: nil, action: nil)
     let workspacePathsField = NSTextField(string: "")
