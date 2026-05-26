@@ -5,7 +5,6 @@ public enum SessionHistoryResult: String, Codable, Equatable, Sendable {
     case timedOut
     case policyStopped
     case error
-    case exited
 
     public var label: String {
         switch self {
@@ -17,8 +16,6 @@ public enum SessionHistoryResult: String, Codable, Equatable, Sendable {
             return "Policy Stopped"
         case .error:
             return "Error"
-        case .exited:
-            return "Exited"
         }
     }
 }
@@ -33,8 +30,6 @@ public struct SessionHistoryEntry: Codable, Equatable, Identifiable, Sendable {
     public let assertionKinds: [String]
     public let result: SessionHistoryResult
     public let errorMessage: String?
-    public let exitStatus: Int32?
-    public let terminationReason: String?
 
     public init(
         id: UUID = UUID(),
@@ -45,9 +40,7 @@ public struct SessionHistoryEntry: Codable, Equatable, Identifiable, Sendable {
         durationLabel: String,
         assertionKinds: [String],
         result: SessionHistoryResult,
-        errorMessage: String? = nil,
-        exitStatus: Int32? = nil,
-        terminationReason: String? = nil
+        errorMessage: String? = nil
     ) {
         self.id = id
         self.startedAt = startedAt
@@ -58,17 +51,13 @@ public struct SessionHistoryEntry: Codable, Equatable, Identifiable, Sendable {
         self.assertionKinds = assertionKinds
         self.result = result
         self.errorMessage = errorMessage
-        self.exitStatus = exitStatus
-        self.terminationReason = terminationReason
     }
 
     public init(
         session: WakeSession,
         endedAt: Date = Date(),
         result: SessionHistoryResult,
-        errorMessage: String? = nil,
-        exitStatus: Int32? = nil,
-        terminationReason: String? = nil
+        errorMessage: String? = nil
     ) {
         self.init(
             startedAt: session.startedAt,
@@ -78,16 +67,11 @@ public struct SessionHistoryEntry: Codable, Equatable, Identifiable, Sendable {
             durationLabel: session.duration.label,
             assertionKinds: session.activeAssertions.sorted { $0.sortOrder < $1.sortOrder }.map(\.displayName),
             result: result,
-            errorMessage: errorMessage,
-            exitStatus: exitStatus,
-            terminationReason: terminationReason
+            errorMessage: errorMessage
         )
     }
 
     public var summary: String {
-        if let exitStatus {
-            return "\(result.label): \(source) - exit \(exitStatus)"
-        }
         return "\(result.label): \(source) - \(durationLabel)"
     }
 }

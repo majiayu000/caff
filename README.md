@@ -1,6 +1,6 @@
 # Caff
 
-Caff is a small macOS menu bar app that keeps the machine awake while long-running agent tasks are active. It can be driven manually, by watched processes, by workspace activity, by agent hook events, or by commands launched from the control window.
+Caff is a small macOS menu bar app that keeps the machine awake while long-running agent tasks are active. It can be driven manually, by watched processes, by workspace activity, by agent hook events, or by CLI/URL commands.
 
 It uses the official IOKit power assertion API:
 
@@ -19,7 +19,6 @@ The app opens a scrollable control window with:
 - live macOS assertion proof
 - manual wake-lock duration controls
 - process, workspace, and agent-activity automation status
-- a one-click agent command launcher
 - notification and local history controls
 
 ## Safety Policy
@@ -56,10 +55,6 @@ History starts empty and can be cleared from the menu or control window.
 ## Settings
 
 Caff persists menu bar density and launch behavior. The menu bar can show icon-only, `CAFF`, compact countdown, or source labels, and the control window can be disabled on launch.
-
-## Agent Launcher
-
-Caff can launch named commands from the control window and tie the wake assertion to the child process. Built-in examples include `codex`, `claude`, `npm test`, and `cargo test`; custom commands can define an executable, arguments, working directory, and environment assignments. When a launched process exits, Caff releases the assertion and records its exit status in local history.
 
 ## CLI and URL Control
 
@@ -128,7 +123,7 @@ When Caff is running, look for `CAFF` in the macOS menu bar. Use the menu bar it
 
 When a wake session is active, Caff shows:
 
-- session source: `Manual`, `Process`, `Workspace`, `Agent`, `Launcher`, `CLI`, or `URL`
+- session source: `Manual`, `Process`, `Workspace`, `Agent`, `CLI`, or `URL`
 - active assertion types
 - assertion reason
 - start time

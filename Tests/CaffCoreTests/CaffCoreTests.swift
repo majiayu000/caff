@@ -72,18 +72,6 @@ private let now = Date(timeIntervalSince1970: 1_000)
     #expect(historyEntry.result == SessionHistoryResult.stopped)
     #expect(historyEntry.summary == "Stopped: Process - 1 Hour")
 
-    let exitedHistoryEntry = SessionHistoryEntry(
-        session: proofSession,
-        endedAt: now.addingTimeInterval(180),
-        result: .exited,
-        errorMessage: "codex exited with status 0",
-        exitStatus: 0,
-        terminationReason: "exit"
-    )
-    #expect(exitedHistoryEntry.exitStatus == 0)
-    #expect(exitedHistoryEntry.terminationReason == "exit")
-    #expect(exitedHistoryEntry.summary == "Exited: Process - exit 0")
-
     do {
         try policy.validate(duration: .oneHour, powerSource: .batteryPower)
         #expect(Bool(false), "long battery sessions should be blocked by default")
@@ -158,17 +146,7 @@ private let now = Date(timeIntervalSince1970: 1_000)
     #expect(inactiveState == .inactive)
 }
 
-@Test func agentCommandAndRemoteControlParsing() throws {
-    #expect(AgentCommandDefinition.builtInExamples.map(\.name) == ["codex", "claude", "npm test", "cargo test"])
-    #expect(
-        try AgentCommandParser.tokenizeArguments("--flag \"hello world\" 'two words'") ==
-            ["--flag", "hello world", "two words"]
-    )
-    #expect(
-        try AgentCommandParser.parseEnvironment("FOO=bar, EMPTY=, PATH=/tmp/bin") ==
-            ["FOO": "bar", "EMPTY": "", "PATH": "/tmp/bin"]
-    )
-
+@Test func remoteControlParsing() throws {
     #expect(try RemoteControlParser.duration(minutes: "45").minutes == 45)
     #expect(try RemoteControlParser.duration(minutes: nil) == .indefinitely)
     #expect(try RemoteControlParser.source("url") == .url)

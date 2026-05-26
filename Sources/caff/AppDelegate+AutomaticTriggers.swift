@@ -189,7 +189,7 @@ extension AppDelegate {
             workspaceTriggerKeepingAwake = false
             workspaceTriggerTimer?.invalidate()
             workspaceTriggerTimer = nil
-        case .manual, .agent, .launcher, .cli, .url:
+        case .manual, .agent, .cli, .url:
             break
         }
     }
