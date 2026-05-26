@@ -1,6 +1,6 @@
 # Caff
 
-Caff is a small macOS menu bar app that keeps the machine awake while long-running agent tasks are active.
+Caff is a small macOS menu bar app that keeps the machine awake while long-running agent tasks are active. It can be driven manually, by watched processes, by workspace activity, by agent hook events, or by commands launched from the control window.
 
 It uses the official IOKit power assertion API:
 
@@ -9,7 +9,18 @@ It uses the official IOKit power assertion API:
 
 ## Current Scope
 
-This MVP implements an idle-sleep/display-sleep assertion controller and a menu bar UI. It does not claim reliable lid-closed operation on every MacBook setup. Lid-close behavior depends on hardware, power, external display state, and macOS policy, so it should be validated separately before treating it as production behavior.
+This MVP implements an idle-sleep/display-sleep assertion controller, a menu bar item, a light Aqua control window, local history, and CLI/URL control. It does not claim reliable lid-closed operation on every MacBook setup. Lid-close behavior depends on hardware, power, external display state, and macOS policy, so it should be validated separately before treating it as production behavior.
+
+## Control Window
+
+The app opens a scrollable control window with:
+
+- a hero status card for the current wake-lock state
+- live macOS assertion proof
+- manual wake-lock duration controls
+- process, workspace, and agent-activity automation status
+- a one-click agent command launcher
+- notification and local history controls
 
 ## Safety Policy
 
@@ -52,7 +63,11 @@ Caff can launch named commands from the control window and tie the wake assertio
 
 ## CLI and URL Control
 
-The same executable accepts `start`, `stop`, and `status` commands. `start` supports `--minutes`, `--reason`, `--display-awake`, and `--source`; `status` prints proof fields including source, assertions, reason, timestamps, display-awake state, and errors. The app bundle registers `caff://start?...` and `caff://stop` for equivalent URL-driven control.
+The same executable accepts `start`, `stop`, `status`, and `agent-touch` commands. `start` supports `--minutes`, `--reason`, `--display-awake`, and `--source`; `status` prints proof fields including source, assertions, reason, timestamps, display-awake state, agent cooldown state, and errors. The app bundle registers URL commands for equivalent control:
+
+- `caff://start?minutes=30&reason=agent`
+- `caff://stop`
+- `caff://agent-touch?source=codex&cooldownSeconds=1800`
 
 For long-running interactive agent CLIs, `agent-touch` refreshes a last-activity cooldown without relying on the `codex` or `claude` process exiting:
 
@@ -60,7 +75,13 @@ For long-running interactive agent CLIs, `agent-touch` refreshes a last-activity
 caff agent-touch --source codex --cooldown-seconds 1800
 ```
 
-Hook `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop` to run that command. Caff keeps the Mac awake until 30 minutes after the latest agent event, then releases the assertion so macOS can follow its normal sleep policy. The equivalent URL form is `caff://agent-touch?source=codex&cooldownSeconds=1800`.
+Hook `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop` to run that command. Caff keeps the Mac awake until 30 minutes after the latest agent event, then releases the assertion so macOS can follow its normal sleep policy.
+
+If you run from the generated app bundle, the executable path is:
+
+```bash
+dist/Caff.app/Contents/MacOS/Caff agent-touch --source codex --cooldown-seconds 1800
+```
 
 ## Run
 
@@ -75,20 +96,19 @@ swift run caff
 open dist/Caff.app
 ```
 
-The generated app opens a small control window and also keeps a `CAFF` menu bar item.
+The generated app opens the control window and also keeps a `CAFF` menu bar item.
 The menu includes `Show Caff` if the window is closed.
 
 ## Status Proof
 
 When a wake session is active, Caff shows:
 
-- session source, currently `Manual`
+- session source: `Manual`, `Process`, `Workspace`, `Agent`, `Launcher`, `CLI`, or `URL`
 - active assertion types
 - assertion reason
 - start time
 - remaining time for timed sessions
-
-The first agent-first trigger should reuse this proof model instead of adding a separate on/off state.
+- agent activity summary and cooldown end time in CLI status
 
 ## Naming
 
