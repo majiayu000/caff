@@ -7,6 +7,47 @@ It uses the official IOKit power assertion API:
 - `PreventUserIdleSystemSleep` keeps macOS from sleeping because the user is idle.
 - `NoDisplaySleepAssertion` is optional and keeps the display awake when enabled.
 
+## Quick Start
+
+Most users only need the manual controls:
+
+1. Build and open the app:
+
+   ```bash
+   ./scripts/build_app.sh
+   open dist/Caff.app
+   ```
+
+2. Click `30 Minutes`, `1 Hour`, or `4 Hours`.
+3. Leave `Keep display awake` off unless the screen itself must stay on.
+4. When your task is done, click `Stop` from the control window or the `CAFF` menu bar item.
+
+To install it like a normal Mac app:
+
+```bash
+ditto dist/Caff.app /Applications/Caff.app
+open -a Caff
+```
+
+When Caff is running, look for `CAFF` in the macOS menu bar.
+
+## Which Mode Should I Use?
+
+| Need | Use |
+| --- | --- |
+| Keep the Mac awake for a known amount of time | Manual buttons: `30 Minutes`, `1 Hour`, `4 Hours` |
+| Keep the display on too | Turn on `Keep display awake` before starting |
+| Keep awake while Codex or Claude activity is happening | `agent-touch` hooks |
+| Coarse automatic detection by running process name | Process Trigger |
+| Project-specific activity based on file changes | Workspace Trigger |
+| Start, stop, or inspect Caff from scripts | CLI or `caff://` URLs |
+
+Start with manual mode. Turn on automation only when manual sessions are not enough.
+
+## What Caff Is Not
+
+Caff is not an agent launcher, terminal replacement, or job runner. Run Codex, Claude, tests, and scripts in your normal terminal or editor. Use Caff to keep the Mac awake while that work is active.
+
 ## Current Scope
 
 This MVP implements an idle-sleep/display-sleep assertion controller, a menu bar item, a light Aqua control window, local history, and CLI/URL control. It does not claim reliable lid-closed operation on every MacBook setup. Lid-close behavior depends on hardware, power, external display state, and macOS policy, so it should be validated separately before treating it as production behavior.
@@ -78,6 +119,25 @@ If you run from the generated app bundle, the executable path is:
 dist/Caff.app/Contents/MacOS/Caff agent-touch --source codex --cooldown-seconds 1800
 ```
 
+## Agent Activity Hooks
+
+Use this mode when a long-running interactive agent may stay open after it has finished answering. Process detection alone cannot reliably tell whether a session is still active.
+
+Configure your agent hooks to run:
+
+```bash
+/Applications/Caff.app/Contents/MacOS/Caff agent-touch --source codex --cooldown-seconds 1800
+```
+
+Run it on these events when available:
+
+- user prompt submitted
+- before tool use
+- after tool use
+- stop or completion
+
+Each event refreshes the cooldown. If no new event arrives for 30 minutes, Caff releases the wake assertion.
+
 ## Run
 
 ```bash
@@ -110,14 +170,6 @@ open -a Caff
 ```
 
 When Caff is running, look for `CAFF` in the macOS menu bar. Use the menu bar item to open `Show Caff`, start or stop a wake session, change menu bar display mode, or quit the app.
-
-## Basic Use
-
-1. Open Caff.
-2. Click `Indefinitely`, `30 Minutes`, `1 Hour`, or `4 Hours` to keep the Mac awake.
-3. Leave `Keep display awake` off unless the screen itself must stay on.
-4. Click `Stop` from the control window or menu bar when the task is done.
-5. Enable process, workspace, or agent activity automation only when you want Caff to start and stop wake sessions automatically.
 
 ## Status Proof
 
