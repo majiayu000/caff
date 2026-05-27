@@ -216,7 +216,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         }
 
         if let endDate = activeSession.endDate, Date() >= endDate {
+            let shouldPollAgentActivity = agentActivityState != nil
             stopSession(result: .timedOut)
+            if shouldPollAgentActivity {
+                pollAgentActivity()
+            }
             return
         }
 
