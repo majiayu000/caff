@@ -6,6 +6,29 @@ public enum SessionHistoryResult: String, Codable, Equatable, Sendable {
     case policyStopped
     case error
 
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+
+        if rawValue == "exited" {
+            self = .stopped
+            return
+        }
+
+        guard let result = SessionHistoryResult(rawValue: rawValue) else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unknown session history result: \(rawValue)"
+            )
+        }
+        self = result
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
     public var label: String {
         switch self {
         case .stopped:

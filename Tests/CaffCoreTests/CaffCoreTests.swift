@@ -72,6 +72,25 @@ private let now = Date(timeIntervalSince1970: 1_000)
     #expect(historyEntry.result == SessionHistoryResult.stopped)
     #expect(historyEntry.summary == "Stopped: Process - 1 Hour")
 
+    let legacyHistoryData = Data("""
+    [
+      {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "startedAt": 1000,
+        "endedAt": 1120,
+        "source": "Launcher",
+        "reason": "Agent command: codex",
+        "durationLabel": "Indefinitely",
+        "assertionKinds": ["PreventUserIdleSystemSleep"],
+        "result": "exited",
+        "errorMessage": "codex exited with status 0"
+      }
+    ]
+    """.utf8)
+    let legacyHistory = try JSONDecoder().decode([SessionHistoryEntry].self, from: legacyHistoryData)
+    #expect(legacyHistory.first?.result == .stopped)
+    #expect(legacyHistory.first?.summary == "Stopped: Launcher - Indefinitely")
+
     do {
         try policy.validate(duration: .oneHour, powerSource: .batteryPower)
         #expect(Bool(false), "long battery sessions should be blocked by default")

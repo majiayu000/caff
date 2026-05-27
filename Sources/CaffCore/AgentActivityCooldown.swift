@@ -39,6 +39,10 @@ public struct AgentActivityEvaluation: Equatable, Sendable {
 public enum AgentActivityCooldown {
     public static let defaultCooldownSeconds = 1_800
 
+    public static func policyDurationMinutes(cooldownSeconds: Int) -> Int {
+        max(1, cooldownSeconds / 60)
+    }
+
     public static func touch(
         source: String?,
         cooldownSeconds: Int = defaultCooldownSeconds,
