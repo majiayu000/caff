@@ -201,7 +201,7 @@ extension AppDelegate {
             checkbox.controlSize = .small
         }
 
-        processIdentifiersField.placeholderString = "codex, claude, node, python, cargo, swift"
+        processIdentifiersField.placeholderString = "Process names or bundle IDs, comma-separated"
         workspacePathsField.placeholderString = "~/Desktop/code, /path/to/workspace"
         for field in [processIdentifiersField, workspacePathsField] {
             field.font = .systemFont(ofSize: 12)
