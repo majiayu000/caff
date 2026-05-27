@@ -48,3 +48,21 @@ import Testing
     #expect(AgentActivityCooldown.policyDurationMinutes(cooldownSeconds: 3_599) == 59)
     #expect(AgentActivityCooldown.policyDurationMinutes(cooldownSeconds: 3_600) == 60)
 }
+
+@Test func cappedCooldownEndDatePreservesSubMinuteRemainders() {
+    let start = Date(timeIntervalSince1970: 40_000)
+    #expect(
+        AgentActivityCooldown.cappedCooldownEndDate(
+            lastActivityAt: start,
+            cooldownUntil: start.addingTimeInterval(90),
+            maximumSessionMinutes: 240
+        ) == start.addingTimeInterval(90)
+    )
+    #expect(
+        AgentActivityCooldown.cappedCooldownEndDate(
+            lastActivityAt: start,
+            cooldownUntil: start.addingTimeInterval(20_000),
+            maximumSessionMinutes: 240
+        ) == start.addingTimeInterval(14_400)
+    )
+}
