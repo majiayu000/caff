@@ -127,11 +127,11 @@ extension AppDelegate {
         state: AgentActivityState,
         cooldownUntil: Date
     ) -> Date {
-        let effectiveEndDate = currentSafetyPolicy().effectiveEndDate(
-            for: agentActivityDuration(),
-            startedAt: state.lastActivityAt
+        AgentActivityCooldown.cappedCooldownEndDate(
+            lastActivityAt: state.lastActivityAt,
+            cooldownUntil: cooldownUntil,
+            maximumSessionMinutes: currentSafetyPolicy().maximumSessionMinutes
         )
-        return min(cooldownUntil, effectiveEndDate ?? cooldownUntil)
     }
 
     private func agentActivityDuration() -> SessionDuration {
