@@ -140,6 +140,7 @@ extension AppDelegate {
         guard let desiredTrigger = desiredAutomaticTrigger() else {
             if activeSession?.source == .process || activeSession?.source == .workspace {
                 stopSession(result: .stopped)
+                pollAgentActivity()
             }
             return
         }
