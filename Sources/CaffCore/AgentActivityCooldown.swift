@@ -57,6 +57,17 @@ public enum AgentActivityCooldown {
         max(1, cooldownSeconds / 60)
     }
 
+    public static func cappedCooldownEndDate(
+        lastActivityAt: Date,
+        cooldownUntil: Date,
+        maximumSessionMinutes: Int
+    ) -> Date {
+        min(
+            cooldownUntil,
+            lastActivityAt.addingTimeInterval(TimeInterval(maximumSessionMinutes * 60))
+        )
+    }
+
     public static func touch(
         source: String?,
         cooldownSeconds: Int = defaultCooldownSeconds,
