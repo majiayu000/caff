@@ -47,12 +47,11 @@ extension AppDelegate {
         agentActivitySummary = evaluation.summary
 
         guard evaluation.isKeepingAwake else {
-            agentActivityState = nil
-            agentActivityTimer?.invalidate()
-            agentActivityTimer = nil
+            cancelAgentActivityCooldown()
             if activeSession?.source == .agent {
                 stopSession(result: .stopped)
             }
+            syncAutomaticTriggerSession()
             return
         }
 
@@ -71,6 +70,7 @@ extension AppDelegate {
             if activeSession?.source == .agent {
                 stopSession(result: .timedOut)
             }
+            syncAutomaticTriggerSession()
             return
         }
 
