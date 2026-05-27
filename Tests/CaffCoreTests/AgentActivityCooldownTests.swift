@@ -42,3 +42,9 @@ import Testing
     #expect(evaluation.isKeepingAwake)
     #expect(evaluation.cooldownUntil == start.addingTimeInterval(3_500))
 }
+
+@Test func agentPolicyDurationDoesNotRoundSubHourCooldownsUpToLongSession() {
+    #expect(AgentActivityCooldown.policyDurationMinutes(cooldownSeconds: 59) == 1)
+    #expect(AgentActivityCooldown.policyDurationMinutes(cooldownSeconds: 3_599) == 59)
+    #expect(AgentActivityCooldown.policyDurationMinutes(cooldownSeconds: 3_600) == 60)
+}
