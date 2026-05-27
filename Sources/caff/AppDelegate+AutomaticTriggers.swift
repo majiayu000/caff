@@ -116,7 +116,7 @@ extension AppDelegate {
             .filter { !$0.isEmpty }
 
         return ProcessTriggerConfiguration(
-            identifiers: identifiers.isEmpty ? ProcessTriggerConfiguration.agentDefaults.identifiers : identifiers,
+            identifiers: identifiers,
             gracePeriodSeconds: currentSafetyPolicy().stopGracePeriodSeconds
         )
     }
