@@ -136,7 +136,7 @@ extension AppDelegate {
         )
     }
 
-    private func syncAutomaticTriggerSession() {
+    func syncAutomaticTriggerSession() {
         guard let desiredTrigger = desiredAutomaticTrigger() else {
             if activeSession?.source == .process || activeSession?.source == .workspace {
                 stopSession(result: .stopped)
