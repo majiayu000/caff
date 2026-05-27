@@ -12,6 +12,7 @@ struct CaffStatusSnapshot: Codable, Equatable {
     let keepDisplayAwake: Bool
     let agentActivity: String?
     let agentCooldownUntil: Date?
+    let lastAgentTouch: AgentActivityTouch?
     let errorMessage: String?
     let updatedAt: Date
 
@@ -19,7 +20,8 @@ struct CaffStatusSnapshot: Codable, Equatable {
         session: WakeSession?,
         errorMessage: String?,
         agentActivity: String? = nil,
-        agentCooldownUntil: Date? = nil
+        agentCooldownUntil: Date? = nil,
+        lastAgentTouch: AgentActivityTouch? = nil
     ) -> CaffStatusSnapshot {
         CaffStatusSnapshot(
             appPID: getpid(),
@@ -32,13 +34,15 @@ struct CaffStatusSnapshot: Codable, Equatable {
             keepDisplayAwake: session?.keepDisplayAwake ?? false,
             agentActivity: agentActivity,
             agentCooldownUntil: agentCooldownUntil,
+            lastAgentTouch: lastAgentTouch,
             errorMessage: errorMessage,
             updatedAt: Date()
         )
     }
 
     var cliDescription: String {
-        [
+        let agentLastTouchAt = lastAgentTouch.map { Self.formatISODate($0.receivedAt) } ?? "none"
+        return [
             "running: \(isRunning)",
             "source: \(source)",
             "assertions: \(assertions)",
@@ -48,6 +52,8 @@ struct CaffStatusSnapshot: Codable, Equatable {
             "displayAwake: \(keepDisplayAwake)",
             "agentActivity: \(agentActivity ?? "none")",
             "agentCooldownUntil: \(agentCooldownUntil.map(Self.formatISODate) ?? "none")",
+            "agentLastTouchSource: \(lastAgentTouch?.source ?? "none")",
+            "agentLastTouchAt: \(agentLastTouchAt)",
             "error: \(errorMessage ?? "none")"
         ].joined(separator: "\n")
     }
