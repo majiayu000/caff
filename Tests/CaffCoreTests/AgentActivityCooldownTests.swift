@@ -56,3 +56,9 @@ import Testing
     #expect(receipt.source == "codex")
     #expect(receipt.receivedAt == receivedAt)
 }
+
+@Test func agentPolicyDurationDoesNotRoundSubHourCooldownsUpToLongSession() {
+    #expect(AgentActivityCooldown.policyDurationMinutes(cooldownSeconds: 59) == 1)
+    #expect(AgentActivityCooldown.policyDurationMinutes(cooldownSeconds: 3_599) == 59)
+    #expect(AgentActivityCooldown.policyDurationMinutes(cooldownSeconds: 3_600) == 60)
+}

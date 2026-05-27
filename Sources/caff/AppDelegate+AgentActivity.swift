@@ -138,7 +138,7 @@ extension AppDelegate {
 
     private func agentActivityDuration() -> SessionDuration {
         let cooldownSeconds = agentActivityState?.cooldownSeconds ?? AgentActivityCooldown.defaultCooldownSeconds
-        let minutes = max(1, Int(ceil(Double(cooldownSeconds) / 60.0)))
+        let minutes = AgentActivityCooldown.policyDurationMinutes(cooldownSeconds: cooldownSeconds)
         return SessionDuration(label: "Agent Activity", minutes: minutes)
     }
 }
