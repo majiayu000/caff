@@ -136,6 +136,11 @@ private let now = Date(timeIntervalSince1970: 1_000)
         bundleTrigger.match(candidates: processCandidates)
             .contains { $0.identifier == "com.openai.codex" && $0.candidate.pid == 10 }
     )
+    #expect(
+        ProcessTriggerEvaluator(configuration: ProcessTriggerConfiguration(identifiers: []))
+            .match(candidates: processCandidates)
+            .isEmpty
+    )
 
     let triggerStart = Date(timeIntervalSince1970: 5_000)
     let (activeEvaluation, activeState) = processTrigger.evaluate(
