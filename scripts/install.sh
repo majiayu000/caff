@@ -37,6 +37,14 @@ fi
 
 if [[ -n "$source_dir" ]]; then
     root_dir="$(cd "$source_dir" && pwd)"
+elif [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    candidate_root="$(cd "$script_dir/.." && pwd)"
+    if [[ -x "$candidate_root/scripts/build_app.sh" ]]; then
+        root_dir="$candidate_root"
+    else
+        die "build script not found near ${BASH_SOURCE[0]}; set CAFF_SOURCE_DIR or install from a release"
+    fi
 else
     tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/caff-install.XXXXXX")"
     git clone --depth 1 --branch "$repo_ref" "$repo_url" "$tmp_dir/caff"
