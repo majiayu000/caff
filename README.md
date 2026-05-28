@@ -9,25 +9,27 @@ It uses the official IOKit power assertion API:
 
 ## Install
 
-The simplest source install builds Caff locally and copies it to `/Applications`:
+For most users, download the latest release zip:
+
+https://github.com/majiayu000/caff/releases/latest
+
+Unzip `Caff.app`, drag it to Applications, then open Caff.
+
+To build and install from source:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/majiayu000/caff/main/scripts/install.sh | bash
+git clone https://github.com/majiayu000/caff.git
+cd caff
+./scripts/install.sh
 ```
 
-This requires macOS 13+ and Xcode Command Line Tools because the installer builds the app from source. To install somewhere else:
+Source install requires macOS 13+ and Xcode Command Line Tools. To install somewhere else:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/majiayu000/caff/main/scripts/install.sh | CAFF_INSTALL_DIR="$HOME/Applications" bash
+CAFF_INSTALL_DIR="$HOME/Applications" ./scripts/install.sh
 ```
 
-For non-developer users, publish a GitHub Release zip:
-
-```bash
-./scripts/package_release.sh
-```
-
-Upload the generated `dist/Caff-<version>.zip` and `.sha256` files to the release. Users can unzip `Caff.app` and drag it to Applications.
+For maintainers, `./scripts/package_release.sh` builds `dist/Caff-<version>.zip` and its `.sha256` file for GitHub Releases.
 
 ## Quick Start
 
