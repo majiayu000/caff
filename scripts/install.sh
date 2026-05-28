@@ -7,6 +7,7 @@ repo_ref="${CAFF_REF:-main}"
 install_dir="${CAFF_INSTALL_DIR:-/Applications}"
 open_after_install="${CAFF_OPEN:-1}"
 source_dir="${CAFF_SOURCE_DIR:-}"
+root_dir=""
 tmp_dir=""
 
 die() {
@@ -42,10 +43,10 @@ elif [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
     candidate_root="$(cd "$script_dir/.." && pwd)"
     if [[ -x "$candidate_root/scripts/build_app.sh" ]]; then
         root_dir="$candidate_root"
-    else
-        die "build script not found near ${BASH_SOURCE[0]}; set CAFF_SOURCE_DIR or install from a release"
     fi
-else
+fi
+
+if [[ -z "$root_dir" ]]; then
     tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/caff-install.XXXXXX")"
     git clone --depth 1 --branch "$repo_ref" "$repo_url" "$tmp_dir/caff"
     root_dir="$tmp_dir/caff"
