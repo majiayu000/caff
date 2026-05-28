@@ -17,7 +17,7 @@ extension AppDelegate {
 
     func cancelAgentActivityCooldown() {
         agentActivityState = nil
-        agentActivitySummary = "Agent activity idle"
+        agentActivitySummary = text.localizedStatus("Agent activity idle")
         agentActivityTimer?.invalidate()
         agentActivityTimer = nil
     }
@@ -46,7 +46,7 @@ extension AppDelegate {
 
     private func syncAgentActivitySession() {
         let evaluation = AgentActivityCooldown.evaluate(state: agentActivityState)
-        agentActivitySummary = evaluation.summary
+        agentActivitySummary = text.localizedStatus(evaluation.summary)
 
         guard evaluation.isKeepingAwake else {
             cancelAgentActivityCooldown()
@@ -80,7 +80,7 @@ extension AppDelegate {
             guard startSession(
                 duration: agentActivityDuration(),
                 source: .agent,
-                reason: evaluation.reason
+                reason: text.localizedStatus(evaluation.reason)
             ) else {
                 cancelAgentActivityCooldown()
                 return
@@ -102,7 +102,7 @@ extension AppDelegate {
             duration: agentActivityDuration(),
             source: .agent,
             keepDisplayAwake: keepDisplayAwake,
-            reason: evaluation.reason
+            reason: text.localizedStatus(evaluation.reason)
         )
 
         do {
@@ -139,6 +139,6 @@ extension AppDelegate {
     private func agentActivityDuration() -> SessionDuration {
         let cooldownSeconds = agentActivityState?.cooldownSeconds ?? AgentActivityCooldown.defaultCooldownSeconds
         let minutes = AgentActivityCooldown.policyDurationMinutes(cooldownSeconds: cooldownSeconds)
-        return SessionDuration(label: "Agent Activity", minutes: minutes)
+        return SessionDuration(label: text.choose(en: "Agent Activity", zh: "Agent 活动"), minutes: minutes)
     }
 }

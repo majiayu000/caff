@@ -2,43 +2,44 @@ import AppKit
 import CaffCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    let text = AppText.current
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let powerAssertions = PowerAssertionController()
-    let windowStatusLabel = NSTextField(labelWithString: "Off")
-    let heroEyebrowLabel = NSTextField(labelWithString: "READY - STANDBY")
-    let heroTitleLabel = NSTextField(labelWithString: "Ready to keep awake")
-    let heroMetaLabel = NSTextField(labelWithString: "No active power assertion")
+    let windowStatusLabel = NSTextField(labelWithString: AppText.current.off)
+    let heroEyebrowLabel = NSTextField(labelWithString: AppText.current.readyStandby)
+    let heroTitleLabel = NSTextField(labelWithString: AppText.current.readyTitle)
+    let heroMetaLabel = NSTextField(labelWithString: AppText.current.noActiveAssertion)
     let heroStatusDot = NSView()
-    let heroActionButton = NSButton(title: "Start", target: nil, action: nil)
-    let sourceProofLabel = NSTextField(labelWithString: "Source: None")
-    let assertionProofLabel = NSTextField(labelWithString: "Assertions: None")
-    let reasonProofLabel = NSTextField(labelWithString: "Reason: None")
-    let startedProofLabel = NSTextField(labelWithString: "Started: None")
+    let heroActionButton = NSButton(title: AppText.current.start, target: nil, action: nil)
+    let sourceProofLabel = NSTextField(labelWithString: AppText.current.localizedStatus("Source: None"))
+    let assertionProofLabel = NSTextField(labelWithString: AppText.current.localizedStatus("Assertions: None"))
+    let reasonProofLabel = NSTextField(labelWithString: AppText.current.localizedStatus("Reason: None"))
+    let startedProofLabel = NSTextField(labelWithString: AppText.current.localizedStatus("Started: None"))
     let errorProofLabel = NSTextField(labelWithString: "")
-    let policyStatusLabel = NSTextField(labelWithString: "Safety: \(SafetyPolicy.standard.summary)")
-    let lidLimitLabel = NSTextField(labelWithString: "Lid close depends on macOS, power, and display setup.")
-    let displayAwakeCheckbox = NSButton(checkboxWithTitle: "Keep display awake", target: nil, action: nil)
-    let batteryPolicyCheckbox = NSButton(checkboxWithTitle: "Allow long sessions on battery", target: nil, action: nil)
-    let processTriggerCheckbox = NSButton(checkboxWithTitle: "Auto-start for agent processes", target: nil, action: nil)
+    let policyStatusLabel = NSTextField(labelWithString: AppText.current.localizedStatus("Safety: \(AppText.current.safetySummary(.standard))"))
+    let lidLimitLabel = NSTextField(labelWithString: AppText.current.lidLimit)
+    let displayAwakeCheckbox = NSButton(checkboxWithTitle: AppText.current.keepDisplayAwake, target: nil, action: nil)
+    let batteryPolicyCheckbox = NSButton(checkboxWithTitle: AppText.current.allowBatteryLongSessions, target: nil, action: nil)
+    let processTriggerCheckbox = NSButton(checkboxWithTitle: AppText.current.autoProcess, target: nil, action: nil)
     let processIdentifiersField = NSTextField(
         string: ProcessTriggerConfiguration.agentDefaults.identifiers.joined(separator: ", ")
     )
-    let processTriggerPillLabel = NSTextField(labelWithString: "Disabled")
-    let processTriggerStatusLabel = NSTextField(labelWithString: "Process trigger idle")
-    let agentActivityPillLabel = NSTextField(labelWithString: "Waiting")
-    let agentActivityStatusLabel = NSTextField(labelWithString: "Agent activity idle")
-    let agentLastTouchLabel = NSTextField(labelWithString: "Last touch: None")
-    let hookManagementStatusLabel = NSTextField(labelWithString: "Hooks: Not installed by Caff")
-    let installHooksButton = NSButton(title: "Install Hooks", target: nil, action: nil)
-    let removeHooksButton = NSButton(title: "Remove Hooks", target: nil, action: nil)
-    let workspaceTriggerCheckbox = NSButton(checkboxWithTitle: "Auto-start for workspace activity", target: nil, action: nil)
+    let processTriggerPillLabel = NSTextField(labelWithString: AppText.current.disabled)
+    let processTriggerStatusLabel = NSTextField(labelWithString: AppText.current.localizedStatus("Process trigger idle"))
+    let agentActivityPillLabel = NSTextField(labelWithString: AppText.current.waiting)
+    let agentActivityStatusLabel = NSTextField(labelWithString: AppText.current.localizedStatus("Agent activity idle"))
+    let agentLastTouchLabel = NSTextField(labelWithString: AppText.current.localizedStatus("Last touch: None"))
+    let hookManagementStatusLabel = NSTextField(labelWithString: AppText.current.hooksNotInstalled)
+    let installHooksButton = NSButton(title: AppText.current.installHooks, target: nil, action: nil)
+    let removeHooksButton = NSButton(title: AppText.current.removeHooks, target: nil, action: nil)
+    let workspaceTriggerCheckbox = NSButton(checkboxWithTitle: AppText.current.autoWorkspace, target: nil, action: nil)
     let workspacePathsField = NSTextField(string: "")
-    let workspaceTriggerPillLabel = NSTextField(labelWithString: "Disabled")
-    let workspaceTriggerStatusLabel = NSTextField(labelWithString: "Workspace trigger idle")
-    let notificationsCheckbox = NSButton(checkboxWithTitle: "Enable notifications", target: nil, action: nil)
-    let historyStatusLabel = NSTextField(labelWithString: "History: Empty")
-    let stopButton = NSButton(title: "Stop", target: nil, action: nil)
-    let clearHistoryButton = NSButton(title: "Clear History", target: nil, action: nil)
+    let workspaceTriggerPillLabel = NSTextField(labelWithString: AppText.current.disabled)
+    let workspaceTriggerStatusLabel = NSTextField(labelWithString: AppText.current.localizedStatus("Workspace trigger idle"))
+    let notificationsCheckbox = NSButton(checkboxWithTitle: AppText.current.enableNotifications, target: nil, action: nil)
+    let historyStatusLabel = NSTextField(labelWithString: AppText.current.localizedStatus("History: Empty"))
+    let stopButton = NSButton(title: AppText.current.stop, target: nil, action: nil)
+    let clearHistoryButton = NSButton(title: AppText.current.clearHistory, target: nil, action: nil)
     let historyStore = SessionHistoryStore()
     let notificationBridge = NotificationBridge()
     private let settingsStore = AppSettingsStore()
@@ -59,11 +60,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var lastAgentTouch: AgentActivityTouch?
     var processTriggerKeepingAwake = false
     var workspaceTriggerKeepingAwake = false
-    var processTriggerReason = "Process trigger"
-    var workspaceTriggerReason = "Workspace trigger"
-    var processTriggerSummary = "Process trigger idle"
-    var agentActivitySummary = "Agent activity idle"
-    var workspaceTriggerSummary = "Workspace trigger idle"
+    var processTriggerReason = AppText.current.localizedStatus("Process trigger")
+    var workspaceTriggerReason = AppText.current.localizedStatus("Workspace trigger")
+    var processTriggerSummary = AppText.current.localizedStatus("Process trigger idle")
+    var agentActivitySummary = AppText.current.localizedStatus("Agent activity idle")
+    var workspaceTriggerSummary = AppText.current.localizedStatus("Workspace trigger idle")
     var keepDisplayAwake = false
     var allowLongSessionsOnBattery = false
     var processTriggerEnabled = false
@@ -228,12 +229,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func startSession(
         duration: SessionDuration,
         source: SessionSource = .manual,
-        reason: String = "Caff is keeping this Mac awake"
+        reason: String? = nil
     ) -> Bool {
+        let sessionReason = reason ?? text.defaultReason
         let startedAt = Date()
         let powerSource = PowerSourceMonitor.current()
         let safetyPolicy = currentSafetyPolicy()
-        let sessionOptions = options(for: duration, source: source, reason: reason)
+        let sessionOptions = options(for: duration, source: source, reason: sessionReason)
 
         do {
             try safetyPolicy.validate(duration: duration, powerSource: powerSource)
@@ -246,7 +248,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             lastErrorMessage = nil
             scheduleTimer()
-            sendNotification(title: "Caff started", body: sessionOptions.reason)
+            sendNotification(title: text.caffStarted, body: sessionOptions.reason)
             rebuildMenu()
             updateStatusTitle()
             return true
@@ -269,7 +271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     result: result,
                     errorMessage: errorMessage
                 )
-                sendNotification(title: "Caff stopped", body: sessionToRecord.reason)
+                sendNotification(title: text.caffStopped, body: sessionToRecord.reason)
             }
             clearSessionState()
             lastErrorMessage = nil
@@ -283,7 +285,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func options(
         for duration: SessionDuration,
         source: SessionSource = .manual,
-        reason: String = "Caff is keeping this Mac awake"
+        reason: String
     ) -> SessionOptions {
         SessionOptions(
             duration: duration,
@@ -331,7 +333,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try powerAssertions.stop()
             if let activeSession {
                 recordHistory(for: activeSession, result: .policyStopped, errorMessage: String(describing: policyError))
-                sendNotification(title: "Caff stopped by policy", body: String(describing: policyError))
+                sendNotification(title: text.caffStoppedByPolicy, body: String(describing: policyError))
             }
             clearSessionState()
         } catch {

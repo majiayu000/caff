@@ -28,26 +28,26 @@ extension AppDelegate {
 
         let hero = heroView()
         let currentSessionSection = sectionView(
-            title: "Current Session",
-            subtitle: "Current session details reported by Caff",
+            title: text.currentSession,
+            subtitle: text.currentSessionSubtitle,
             symbolName: "checkmark.shield.fill",
             views: [insetView(proofStack()), insetView(policyStatusLabel), insetView(lidLimitLabel)]
         )
         let keepAwakeSection = sectionView(
-            title: "Wake Lock",
-            subtitle: "Keep your Mac awake while agents are working",
+            title: text.wakeLock,
+            subtitle: text.wakeLockSubtitle,
             symbolName: "bolt.fill",
             views: [wakeLockRows()]
         )
         let automationSection = sectionView(
-            title: "Automation",
-            subtitle: "Agent hook events first, with optional local triggers",
+            title: text.automation,
+            subtitle: text.automationSubtitle,
             symbolName: "bolt.badge.clock.fill",
             views: automationViews()
         )
         let historySection = sectionView(
-            title: "History",
-            subtitle: "Recent wake-lock sessions and trigger events",
+            title: text.history,
+            subtitle: text.historySubtitle,
             symbolName: "clock.arrow.circlepath",
             views: [historyRows()]
         )
@@ -110,23 +110,23 @@ extension AppDelegate {
 
         if let activeSession {
             let compactStatus = activeSession.compactStatus()
-            statusText = activeSession.endDate == nil ? "On" : "On: \(compactStatus)"
+            statusText = activeSession.endDate == nil ? text.on : "\(text.on): \(compactStatus)"
             windowStatusLabel.textColor = CaffPanelStyle.good
-            sourceProofLabel.stringValue = "Source: \(activeSession.sourceLabel)"
-            assertionProofLabel.stringValue = "Assertions: \(activeSession.assertionSummary)"
-            reasonProofLabel.stringValue = "Reason: \(activeSession.reason)"
-            startedProofLabel.stringValue = "Started: \(formatDate(activeSession.startedAt))"
-            errorProofLabel.stringValue = activeSession.errorMessage.map { "Error: \($0)" } ?? ""
-            policyStatusLabel.stringValue = "Safety: \(safetyNotes(for: activeSession).joined(separator: ", "))"
+            sourceProofLabel.stringValue = text.label(text.localizedStatus("Source"), text.sourceLabel(activeSession.source))
+            assertionProofLabel.stringValue = text.label(text.localizedStatus("Assertions"), text.assertionSummary(activeSession.assertionSummary))
+            reasonProofLabel.stringValue = text.label(text.localizedStatus("Reason"), activeSession.reason)
+            startedProofLabel.stringValue = text.label(text.localizedStatus("Started"), formatDate(activeSession.startedAt))
+            errorProofLabel.stringValue = activeSession.errorMessage.map { text.label(text.localizedStatus("Error"), $0) } ?? ""
+            policyStatusLabel.stringValue = text.label(text.localizedStatus("Safety"), text.localizedSafetyNotes(safetyNotes(for: activeSession)))
         } else {
-            statusText = lastErrorMessage == nil ? "Off" : "Error"
+            statusText = lastErrorMessage == nil ? text.off : text.error
             windowStatusLabel.textColor = lastErrorMessage == nil ? CaffPanelStyle.inkSecondary : CaffPanelStyle.bad
-            sourceProofLabel.stringValue = "Source: None"
-            assertionProofLabel.stringValue = "Assertions: None"
-            reasonProofLabel.stringValue = "Reason: None"
-            startedProofLabel.stringValue = "Started: None"
-            errorProofLabel.stringValue = lastErrorMessage.map { "Error: \($0)" } ?? ""
-            policyStatusLabel.stringValue = "Safety: \(currentSafetyPolicy().summary)"
+            sourceProofLabel.stringValue = text.label(text.localizedStatus("Source"), text.none)
+            assertionProofLabel.stringValue = text.label(text.localizedStatus("Assertions"), text.none)
+            reasonProofLabel.stringValue = text.label(text.localizedStatus("Reason"), text.none)
+            startedProofLabel.stringValue = text.label(text.localizedStatus("Started"), text.none)
+            errorProofLabel.stringValue = lastErrorMessage.map { text.label(text.localizedStatus("Error"), $0) } ?? ""
+            policyStatusLabel.stringValue = text.label(text.localizedStatus("Safety"), text.safetySummary(currentSafetyPolicy()))
         }
 
         windowStatusLabel.stringValue = statusText
@@ -134,25 +134,25 @@ extension AppDelegate {
         displayAwakeCheckbox.state = keepDisplayAwake ? .on : .off
         batteryPolicyCheckbox.state = allowLongSessionsOnBattery ? .on : .off
         processTriggerCheckbox.state = processTriggerEnabled ? .on : .off
-        processTriggerPillLabel.stringValue = processTriggerEnabled ? "Watching" : "Disabled"
+        processTriggerPillLabel.stringValue = processTriggerEnabled ? text.watching : text.disabled
         processTriggerPillLabel.textColor = processTriggerEnabled ? CaffPanelStyle.good : CaffPanelStyle.inkTertiary
-        processTriggerStatusLabel.stringValue = processTriggerSummary
+        processTriggerStatusLabel.stringValue = text.localizedStatus(processTriggerSummary)
         let agentEvaluation = AgentActivityCooldown.evaluate(state: agentActivityState)
-        agentActivityPillLabel.stringValue = agentEvaluation.isKeepingAwake ? "Active" : "Waiting"
+        agentActivityPillLabel.stringValue = agentEvaluation.isKeepingAwake ? text.active : text.waiting
         agentActivityPillLabel.textColor = agentEvaluation.isKeepingAwake ? CaffPanelStyle.good : CaffPanelStyle.inkTertiary
-        agentActivityStatusLabel.stringValue = agentActivitySummary
+        agentActivityStatusLabel.stringValue = text.localizedStatus(agentActivitySummary)
         agentLastTouchLabel.stringValue = lastAgentTouch.map {
-            "Last touch: \($0.source) at \(formatDate($0.receivedAt))"
-        } ?? "Last touch: None"
+            text.choose(en: "Last touch: \($0.source) at \(formatDate($0.receivedAt))", zh: "最近触发：\($0.source)，\(formatDate($0.receivedAt))")
+        } ?? text.localizedStatus("Last touch: None")
         workspaceTriggerCheckbox.state = workspaceTriggerEnabled ? .on : .off
-        workspaceTriggerPillLabel.stringValue = workspaceTriggerEnabled ? "Watching" : "Disabled"
+        workspaceTriggerPillLabel.stringValue = workspaceTriggerEnabled ? text.watching : text.disabled
         workspaceTriggerPillLabel.textColor = workspaceTriggerEnabled ? CaffPanelStyle.good : CaffPanelStyle.inkTertiary
-        workspaceTriggerStatusLabel.stringValue = workspaceTriggerSummary
+        workspaceTriggerStatusLabel.stringValue = text.localizedStatus(workspaceTriggerSummary)
         notificationsCheckbox.state = notificationsEnabled ? .on : .off
         historyStatusLabel.stringValue = historyMenuSummary()
         clearHistoryButton.isEnabled = !history.isEmpty
         stopButton.isEnabled = isRunning
-        heroActionButton.title = isRunning ? "Stop" : "Start"
+        heroActionButton.title = isRunning ? text.stop : text.start
         heroActionButton.contentTintColor = isRunning ? CaffPanelStyle.bad : CaffPanelStyle.accent
         for button in startButtons {
             button.isEnabled = !isRunning
@@ -207,8 +207,8 @@ extension AppDelegate {
             checkbox.controlSize = .small
         }
 
-        processIdentifiersField.placeholderString = "Process names or bundle IDs, comma-separated"
-        workspacePathsField.placeholderString = "~/Desktop/code, /path/to/workspace"
+        processIdentifiersField.placeholderString = text.processPlaceholder
+        workspacePathsField.placeholderString = text.workspacePlaceholder
         for field in [processIdentifiersField, workspacePathsField] {
             field.font = .systemFont(ofSize: 12)
             field.controlSize = .small
@@ -247,26 +247,26 @@ extension AppDelegate {
 
     private func updateHero() {
         if let activeSession {
-            heroEyebrowLabel.stringValue = "CAFFEINATED - AWAKE"
+            heroEyebrowLabel.stringValue = text.caffeinatedAwake
             heroEyebrowLabel.textColor = CaffPanelStyle.good
             heroStatusDot.layer?.backgroundColor = CaffPanelStyle.good.cgColor
-            heroTitleLabel.stringValue = keepDisplayAwake ? "Display will stay on" : "Mac will stay awake"
-            heroMetaLabel.stringValue = "\(activeSession.compactStatus()) - triggered by \(activeSession.sourceLabel.lowercased()) - \(activeSession.assertionSummary)"
+            heroTitleLabel.stringValue = keepDisplayAwake ? text.displayWillStayOn : text.macWillStayAwake
+            heroMetaLabel.stringValue = text.triggeredMeta(for: activeSession)
             return
         }
 
         if lastErrorMessage == nil {
-            heroEyebrowLabel.stringValue = "READY - STANDBY"
+            heroEyebrowLabel.stringValue = text.readyStandby
             heroEyebrowLabel.textColor = CaffPanelStyle.inkTertiary
             heroStatusDot.layer?.backgroundColor = CaffPanelStyle.inkTertiary.cgColor
-            heroTitleLabel.stringValue = "Ready to keep awake"
-            heroMetaLabel.stringValue = "No active power assertion - choose a duration or automation trigger"
+            heroTitleLabel.stringValue = text.readyTitle
+            heroMetaLabel.stringValue = text.readyMeta
         } else {
-            heroEyebrowLabel.stringValue = "NEEDS ATTENTION"
+            heroEyebrowLabel.stringValue = text.needsAttention
             heroEyebrowLabel.textColor = CaffPanelStyle.bad
             heroStatusDot.layer?.backgroundColor = CaffPanelStyle.bad.cgColor
-            heroTitleLabel.stringValue = "Wake lock needs attention"
-            heroMetaLabel.stringValue = lastErrorMessage ?? "Unknown error"
+            heroTitleLabel.stringValue = text.wakeLockNeedsAttention
+            heroMetaLabel.stringValue = lastErrorMessage ?? text.unknownError
         }
     }
 
@@ -386,12 +386,12 @@ extension AppDelegate {
     private func startGrid() -> NSGridView {
         let grid = NSGridView(views: [
             [
-                startButton("Indefinitely", action: #selector(startIndefinitely)),
-                startButton("30 Minutes", action: #selector(startThirtyMinutes))
+                startButton(text.durationLabel(.indefinitely), action: #selector(startIndefinitely)),
+                startButton(text.durationLabel(.thirtyMinutes), action: #selector(startThirtyMinutes))
             ],
             [
-                startButton("1 Hour", action: #selector(startOneHour)),
-                startButton("4 Hours", action: #selector(startFourHours))
+                startButton(text.durationLabel(.oneHour), action: #selector(startOneHour)),
+                startButton(text.durationLabel(.fourHours), action: #selector(startFourHours))
             ]
         ])
         grid.columnSpacing = 10
@@ -414,14 +414,14 @@ extension AppDelegate {
     private func wakeLockRows() -> NSView {
         let stack = NSStackView(views: [
             settingsRow(
-                title: "Keep display awake",
-                subtitle: "Prevents the screen from dimming or turning off",
+                title: text.keepDisplayAwake,
+                subtitle: text.keepDisplayAwakeSubtitle,
                 control: displayAwakeCheckbox
             ),
             divider(),
             settingsRow(
-                title: "Allow long sessions on battery",
-                subtitle: "Skip the safety timeout when running on battery power",
+                title: text.allowBatteryLongSessions,
+                subtitle: text.allowBatteryLongSessionsSubtitle,
                 control: batteryPolicyCheckbox
             ),
             divider(),
@@ -435,9 +435,9 @@ extension AppDelegate {
     }
 
     private func manualControlView() -> NSView {
-        let title = NSTextField(labelWithString: "Manual control")
+        let title = NSTextField(labelWithString: text.manualControl)
         CaffPanelStyle.configureTitle(title)
-        let subtitle = NSTextField(labelWithString: "Pick a duration or stop the current wake lock")
+        let subtitle = NSTextField(labelWithString: text.manualControlSubtitle)
         CaffPanelStyle.configureBody(subtitle)
         let labels = NSStackView(views: [title, subtitle])
         labels.orientation = .vertical
@@ -467,8 +467,8 @@ extension AppDelegate {
             agentActivityHookGroup(),
             divider(),
             automationTriggerGroup(
-                title: "Optional process trigger",
-                subtitle: "Fallback wake lock based on watched process names",
+                title: text.optionalProcessTrigger,
+                subtitle: text.optionalProcessTriggerSubtitle,
                 control: processTriggerCheckbox,
                 trailing: statusPillView(processTriggerPillLabel),
                 views: [
@@ -478,8 +478,8 @@ extension AppDelegate {
             ),
             divider(),
             automationTriggerGroup(
-                title: "Optional workspace trigger",
-                subtitle: "Fallback wake lock based on configured workspace paths",
+                title: text.optionalWorkspaceTrigger,
+                subtitle: text.optionalWorkspaceTriggerSubtitle,
                 control: workspaceTriggerCheckbox,
                 trailing: statusPillView(workspaceTriggerPillLabel),
                 views: [
@@ -493,8 +493,8 @@ extension AppDelegate {
     private func historyRows() -> NSView {
         let stack = NSStackView(views: [
             settingsRow(
-                title: "Enable notifications",
-                subtitle: "Notify when Caff starts or stops",
+                title: text.enableNotifications,
+                subtitle: text.enableNotificationsSubtitle,
                 control: notificationsCheckbox
             ),
             divider(),
@@ -514,9 +514,9 @@ extension AppDelegate {
             tint: CaffPanelStyle.accent,
             size: 28
         )
-        let title = NSTextField(labelWithString: "Agent Activity Hook")
+        let title = NSTextField(labelWithString: text.agentActivityHook)
         CaffPanelStyle.configureTitle(title)
-        let subtitle = NSTextField(labelWithString: "Refreshes Caff when Codex or Claude hook events arrive")
+        let subtitle = NSTextField(labelWithString: text.agentActivityHookSubtitle)
         CaffPanelStyle.configureBody(subtitle)
         let labels = NSStackView(views: [title, subtitle])
         labels.orientation = .vertical

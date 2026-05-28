@@ -5,7 +5,7 @@ extension AppDelegate {
     @objc func toggleProcessTrigger() {
         processTriggerEnabled.toggle()
         processTriggerState = .inactive
-        processTriggerSummary = processTriggerEnabled ? "Process trigger watching" : "Process trigger idle"
+        processTriggerSummary = processTriggerEnabled ? text.localizedStatus("Process trigger watching") : text.localizedStatus("Process trigger idle")
 
         if processTriggerEnabled {
             scheduleProcessTriggerTimer()
@@ -14,7 +14,7 @@ extension AppDelegate {
             processTriggerTimer?.invalidate()
             processTriggerTimer = nil
             processTriggerKeepingAwake = false
-            processTriggerReason = "Process trigger"
+            processTriggerReason = text.localizedStatus("Process trigger")
             syncAutomaticTriggerSession()
         }
 
@@ -25,7 +25,7 @@ extension AppDelegate {
     @objc func toggleWorkspaceTrigger() {
         workspaceTriggerEnabled.toggle()
         workspaceTriggerState = .inactive
-        workspaceTriggerSummary = workspaceTriggerEnabled ? "Workspace trigger watching" : "Workspace trigger idle"
+        workspaceTriggerSummary = workspaceTriggerEnabled ? text.localizedStatus("Workspace trigger watching") : text.localizedStatus("Workspace trigger idle")
 
         if workspaceTriggerEnabled {
             scheduleWorkspaceTriggerTimer()
@@ -34,7 +34,7 @@ extension AppDelegate {
             workspaceTriggerTimer?.invalidate()
             workspaceTriggerTimer = nil
             workspaceTriggerKeepingAwake = false
-            workspaceTriggerReason = "Workspace trigger"
+            workspaceTriggerReason = text.localizedStatus("Workspace trigger")
             syncAutomaticTriggerSession()
         }
 
@@ -53,9 +53,9 @@ extension AppDelegate {
             previousState: processTriggerState
         )
         processTriggerState = nextState
-        processTriggerSummary = evaluation.summary
+        processTriggerSummary = text.localizedStatus(evaluation.summary)
         processTriggerKeepingAwake = evaluation.isKeepingAwake
-        processTriggerReason = evaluation.reason
+        processTriggerReason = text.localizedStatus(evaluation.reason)
         syncAutomaticTriggerSession()
 
         rebuildMenu()
@@ -74,9 +74,9 @@ extension AppDelegate {
             previousState: workspaceTriggerState
         )
         workspaceTriggerState = nextState
-        workspaceTriggerSummary = evaluation.summary
+        workspaceTriggerSummary = text.localizedStatus(evaluation.summary)
         workspaceTriggerKeepingAwake = evaluation.isKeepingAwake
-        workspaceTriggerReason = evaluation.reason
+        workspaceTriggerReason = text.localizedStatus(evaluation.reason)
         syncAutomaticTriggerSession()
 
         rebuildMenu()
