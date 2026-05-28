@@ -128,7 +128,7 @@ Caff persists menu bar density and launch behavior. The menu bar can show icon-o
 
 ## CLI and URL Control
 
-The same executable accepts `start`, `stop`, `status`, and `agent-touch` commands. `start` supports `--minutes`, `--reason`, `--display-awake`, and `--source`; `status` prints the latest Caff app snapshot, including source, requested assertions, reason, timestamps, display-awake state, agent cooldown state, the last received agent-touch event, and errors. The app bundle registers URL commands for equivalent control:
+The same executable accepts `start`, `stop`, `status`, `agent-touch`, `install-hooks`, and `remove-hooks` commands. `start` supports `--minutes`, `--reason`, `--display-awake`, and `--source`; `status` prints the latest Caff app snapshot, including source, requested assertions, reason, timestamps, display-awake state, agent cooldown state, the last received agent-touch event, and errors. The app bundle registers URL commands for equivalent control:
 
 - `caff://start?minutes=30&reason=agent`
 - `caff://stop`
@@ -157,6 +157,15 @@ Configure your agent hooks to run:
 ```bash
 /Applications/Caff.app/Contents/MacOS/Caff agent-touch --source codex --cooldown-seconds 1800
 ```
+
+Or let Caff install/remove supported Codex and Claude hooks:
+
+```bash
+/Applications/Caff.app/Contents/MacOS/Caff install-hooks
+/Applications/Caff.app/Contents/MacOS/Caff remove-hooks
+```
+
+Use `--target codex` or `--target claude` to manage one tool, and `--cooldown-seconds 1800` to customize the installed cooldown. The control window also has `Install Hooks` and `Remove Hooks` buttons in the Agent Activity Hook section. Hook install updates `~/.codex/hooks.json` and `~/.claude/settings.json`, preserving existing non-Caff hooks. Hook removal only removes Caff `agent-touch` hooks.
 
 Run it on these events when available:
 

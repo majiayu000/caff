@@ -221,6 +221,8 @@ extension AppDelegate {
         agentActivityStatusLabel.alignment = .left
         AppLabelStyle.configureSecondary(agentLastTouchLabel)
         agentLastTouchLabel.alignment = .left
+        AppLabelStyle.configureSecondary(hookManagementStatusLabel)
+        hookManagementStatusLabel.alignment = .left
         AppLabelStyle.configureSecondary(workspaceTriggerStatusLabel)
         workspaceTriggerStatusLabel.alignment = .left
         configurePillLabel(workspaceTriggerPillLabel)
@@ -234,6 +236,13 @@ extension AppDelegate {
         clearHistoryButton.target = self
         clearHistoryButton.action = #selector(clearHistory)
         CaffPanelStyle.styleRoundedButton(clearHistoryButton)
+        installHooksButton.target = self
+        installHooksButton.action = #selector(installAgentHooks)
+        CaffPanelStyle.styleRoundedButton(installHooksButton)
+        removeHooksButton.target = self
+        removeHooksButton.action = #selector(removeAgentHooks)
+        CaffPanelStyle.styleRoundedButton(removeHooksButton)
+        removeHooksButton.contentTintColor = CaffPanelStyle.bad
     }
 
     private func updateHero() {
@@ -523,10 +532,18 @@ extension AppDelegate {
         labels.setContentHuggingPriority(.defaultLow, for: .horizontal)
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
+        let hookButtons = NSStackView(views: [installHooksButton, removeHooksButton])
+        hookButtons.orientation = .horizontal
+        hookButtons.alignment = .centerY
+        hookButtons.distribution = .fillEqually
+        hookButtons.spacing = 8
+
         let stack = NSStackView(views: [
             paddedRow(row),
             insetView(agentActivityStatusLabel, top: 0, bottom: 4),
-            insetView(agentLastTouchLabel, top: 0, bottom: 12)
+            insetView(agentLastTouchLabel, top: 0, bottom: 4),
+            insetView(hookManagementStatusLabel, top: 0, bottom: 8),
+            insetView(hookButtons, top: 0, bottom: 12)
         ])
         stack.orientation = .vertical
         stack.alignment = .width

@@ -10,11 +10,12 @@ enum CaffCommandLineError: Error, CustomStringConvertible {
     case unknownOption(String)
     case cannotStartApp
     case statusUnavailable
+    case invalidHookTarget(String)
 
     var description: String {
         switch self {
         case .missingCommand:
-            return "Missing command. Use: caff start|stop|status|agent-touch"
+            return "Missing command. Use: caff start|stop|status|agent-touch|install-hooks|remove-hooks"
         case let .missingValue(option):
             return "Missing value for \(option)"
         case let .unknownCommand(command):
@@ -25,6 +26,8 @@ enum CaffCommandLineError: Error, CustomStringConvertible {
             return "Could not start Caff app"
         case .statusUnavailable:
             return "Caff status is unavailable"
+        case let .invalidHookTarget(value):
+            return "Invalid hook target: \(value). Use codex, claude, or all"
         }
     }
 }
@@ -57,6 +60,14 @@ final class CaffCommandLineController {
             RemoteCommandBridge.post(options)
             Thread.sleep(forTimeInterval: 0.35)
             print("agent touch sent")
+        case "install-hooks":
+            let options = try parseHookOptions(rest, allowCooldown: true)
+            let changes = try hookManager(cooldownSeconds: options.cooldownSeconds).install(targets: options.targets)
+            printHookChanges(changes)
+        case "remove-hooks":
+            let options = try parseHookOptions(rest, allowCooldown: false)
+            let changes = try hookManager(cooldownSeconds: options.cooldownSeconds).remove(targets: options.targets)
+            printHookChanges(changes)
         case "status":
             try rejectUnexpectedOptions(rest)
             try ensureAppRunning()
@@ -110,6 +121,37 @@ final class CaffCommandLineController {
         return result
     }
 
+    private func parseHookOptions(_ arguments: [String], allowCooldown: Bool) throws -> HookOptions {
+        var targets = AgentHookTarget.allCases
+        var cooldownSeconds = AgentActivityCooldown.defaultCooldownSeconds
+        var index = 0
+        while index < arguments.count {
+            let option = arguments[index]
+            switch option {
+            case "--target":
+                let value = try value(after: option, in: arguments, index: &index)
+                targets = try hookTargets(value)
+            case "--cooldown-seconds" where allowCooldown:
+                let value = try value(after: option, in: arguments, index: &index)
+                cooldownSeconds = try RemoteControlParser.cooldownSeconds(value)
+            default:
+                throw CaffCommandLineError.unknownOption(option)
+            }
+            index += 1
+        }
+        return HookOptions(targets: targets, cooldownSeconds: cooldownSeconds)
+    }
+
+    private func hookTargets(_ value: String) throws -> [AgentHookTarget] {
+        if value == "all" {
+            return AgentHookTarget.allCases
+        }
+        guard let target = AgentHookTarget(rawValue: value) else {
+            throw CaffCommandLineError.invalidHookTarget(value)
+        }
+        return [target]
+    }
+
     private func value(after option: String, in arguments: [String], index: inout Int) throws -> String {
         let valueIndex = index + 1
         guard valueIndex < arguments.count else {
@@ -153,6 +195,20 @@ final class CaffCommandLineController {
             throw CaffCommandLineError.statusUnavailable
         }
         print(status.cliDescription)
+    }
+
+    private func hookManager(cooldownSeconds: Int) -> AgentHookManager {
+        AgentHookManager(
+            homeDirectory: hookHomeDirectory(),
+            executablePath: executablePath(),
+            cooldownSeconds: cooldownSeconds
+        )
+    }
+
+    private func printHookChanges(_ changes: [AgentHookChange]) {
+        for change in changes {
+            print(change.summary)
+        }
     }
 
     private func hasLiveStatus() -> Bool {
@@ -199,5 +255,17 @@ final class CaffCommandLineController {
             .appendingPathComponent(rawPath)
             .standardizedFileURL
             .path
+    }
+
+    private func hookHomeDirectory() -> URL {
+        if let override = ProcessInfo.processInfo.environment["CAFF_HOOK_HOME"], !override.isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+    }
+
+    private struct HookOptions {
+        let targets: [AgentHookTarget]
+        let cooldownSeconds: Int
     }
 }
