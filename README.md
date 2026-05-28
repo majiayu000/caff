@@ -57,9 +57,9 @@ This MVP implements an idle-sleep/display-sleep assertion controller, a menu bar
 The app opens a scrollable control window with:
 
 - a hero status card for the current wake-lock state
-- live macOS assertion proof
+- current session details reported by Caff
 - manual wake-lock duration controls
-- process, workspace, and agent-activity automation status
+- agent-activity, process, and workspace automation status
 - notification and local history controls
 
 ## Safety Policy
@@ -75,7 +75,7 @@ Caff keeps display sleep prevention opt-in and applies a visible safety policy b
 
 Caff can watch a configurable comma-separated list of process names or bundle identifiers.
 The default list is `codex, claude, node, python, cargo, swift`.
-When a matching process exists, Caff starts a process-sourced keep-awake session and shows the triggering process in the status proof.
+When a matching process exists, Caff starts a process-sourced keep-awake session and shows the triggering process in the status snapshot.
 When no match remains, Caff keeps the session alive for the configured grace period before stopping it.
 
 ## Workspace Trigger
@@ -99,7 +99,7 @@ Caff persists menu bar density and launch behavior. The menu bar can show icon-o
 
 ## CLI and URL Control
 
-The same executable accepts `start`, `stop`, `status`, and `agent-touch` commands. `start` supports `--minutes`, `--reason`, `--display-awake`, and `--source`; `status` prints proof fields including source, assertions, reason, timestamps, display-awake state, agent cooldown state, and errors. The app bundle registers URL commands for equivalent control:
+The same executable accepts `start`, `stop`, `status`, and `agent-touch` commands. `start` supports `--minutes`, `--reason`, `--display-awake`, and `--source`; `status` prints the latest Caff app snapshot, including source, requested assertions, reason, timestamps, display-awake state, agent cooldown state, the last received agent-touch event, and errors. The app bundle registers URL commands for equivalent control:
 
 - `caff://start?minutes=30&reason=agent`
 - `caff://stop`
@@ -111,7 +111,7 @@ For long-running interactive agent CLIs, `agent-touch` refreshes a last-activity
 caff agent-touch --source codex --cooldown-seconds 1800
 ```
 
-Hook `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop` to run that command. Caff keeps the Mac awake until 30 minutes after the latest agent event, then releases the assertion so macOS can follow its normal sleep policy.
+Hook the agent events that fire during a turn to run that command. For Claude Code, use `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop`; for Codex, use the supported hook events in your `hooks.json`, such as `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop`. Caff keeps the Mac awake until 30 minutes after the latest agent event, then releases the assertion so macOS can follow its normal sleep policy.
 
 If you run from the generated app bundle, the executable path is:
 
@@ -137,6 +137,8 @@ Run it on these events when available:
 - stop or completion
 
 Each event refreshes the cooldown. If no new event arrives for 30 minutes, Caff releases the wake assertion.
+
+Copy-pasteable hook snippets are available in `examples/codex-hooks.json` and `examples/claude-settings-hooks.json`.
 
 ## Run
 
@@ -171,16 +173,16 @@ open -a Caff
 
 When Caff is running, look for `CAFF` in the macOS menu bar. Use the menu bar item to open `Show Caff`, start or stop a wake session, change menu bar display mode, or quit the app.
 
-## Status Proof
+## Status Snapshot
 
 When a wake session is active, Caff shows:
 
 - session source: `Manual`, `Process`, `Workspace`, `Agent`, `CLI`, or `URL`
-- active assertion types
+- assertion types requested by Caff
 - assertion reason
 - start time
 - remaining time for timed sessions
-- agent activity summary and cooldown end time in CLI status
+- agent activity summary, cooldown end time, and last received `agent-touch` source/time in CLI status
 
 ## Naming
 

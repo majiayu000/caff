@@ -36,6 +36,20 @@ public struct AgentActivityEvaluation: Equatable, Sendable {
     }
 }
 
+public struct AgentActivityTouch: Codable, Equatable, Sendable {
+    public let source: String
+    public let receivedAt: Date
+
+    public init(source: String, receivedAt: Date) {
+        self.source = AgentActivityCooldown.normalizedSource(source)
+        self.receivedAt = receivedAt
+    }
+
+    public init(state: AgentActivityState) {
+        self.init(source: state.source, receivedAt: state.lastActivityAt)
+    }
+}
+
 public enum AgentActivityCooldown {
     public static let defaultCooldownSeconds = 1_800
 

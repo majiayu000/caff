@@ -3,10 +3,12 @@ import CaffCore
 
 extension AppDelegate {
     func touchAgentActivity(source: String?, cooldownSeconds: Int = AgentActivityCooldown.defaultCooldownSeconds) {
-        agentActivityState = AgentActivityCooldown.touch(
+        let nextState = AgentActivityCooldown.touch(
             source: source,
             cooldownSeconds: cooldownSeconds
         )
+        agentActivityState = nextState
+        lastAgentTouch = AgentActivityTouch(state: nextState)
         scheduleAgentActivityTimer()
         syncAgentActivitySession()
         rebuildMenu()

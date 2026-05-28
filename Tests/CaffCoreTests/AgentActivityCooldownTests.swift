@@ -43,6 +43,20 @@ import Testing
     #expect(evaluation.cooldownUntil == start.addingTimeInterval(3_500))
 }
 
+@Test func agentTouchReceiptKeepsLastReceivedSourceAndTime() {
+    let receivedAt = Date(timeIntervalSince1970: 30_000)
+    let state = AgentActivityCooldown.touch(
+        source: " codex ",
+        cooldownSeconds: 1_800,
+        now: receivedAt
+    )
+
+    let receipt = AgentActivityTouch(state: state)
+
+    #expect(receipt.source == "codex")
+    #expect(receipt.receivedAt == receivedAt)
+}
+
 @Test func agentPolicyDurationDoesNotRoundSubHourCooldownsUpToLongSession() {
     #expect(AgentActivityCooldown.policyDurationMinutes(cooldownSeconds: 59) == 1)
     #expect(AgentActivityCooldown.policyDurationMinutes(cooldownSeconds: 3_599) == 59)

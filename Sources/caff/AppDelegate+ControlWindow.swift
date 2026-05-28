@@ -29,7 +29,7 @@ extension AppDelegate {
         let hero = heroView()
         let currentSessionSection = sectionView(
             title: "Current Session",
-            subtitle: "Live macOS power assertion proof",
+            subtitle: "Current session details reported by Caff",
             symbolName: "checkmark.shield.fill",
             views: [insetView(proofStack()), insetView(policyStatusLabel), insetView(lidLimitLabel)]
         )
@@ -41,7 +41,7 @@ extension AppDelegate {
         )
         let automationSection = sectionView(
             title: "Automation",
-            subtitle: "Auto-start Caff when agents or workspaces are active",
+            subtitle: "Agent hook events first, with optional local triggers",
             symbolName: "bolt.badge.clock.fill",
             views: automationViews()
         )
@@ -137,8 +137,13 @@ extension AppDelegate {
         processTriggerPillLabel.stringValue = processTriggerEnabled ? "Watching" : "Disabled"
         processTriggerPillLabel.textColor = processTriggerEnabled ? CaffPanelStyle.good : CaffPanelStyle.inkTertiary
         processTriggerStatusLabel.stringValue = processTriggerSummary
-        updateProcessChips()
+        let agentEvaluation = AgentActivityCooldown.evaluate(state: agentActivityState)
+        agentActivityPillLabel.stringValue = agentEvaluation.isKeepingAwake ? "Active" : "Waiting"
+        agentActivityPillLabel.textColor = agentEvaluation.isKeepingAwake ? CaffPanelStyle.good : CaffPanelStyle.inkTertiary
         agentActivityStatusLabel.stringValue = agentActivitySummary
+        agentLastTouchLabel.stringValue = lastAgentTouch.map {
+            "Last touch: \($0.source) at \(formatDate($0.receivedAt))"
+        } ?? "Last touch: None"
         workspaceTriggerCheckbox.state = workspaceTriggerEnabled ? .on : .off
         workspaceTriggerPillLabel.stringValue = workspaceTriggerEnabled ? "Watching" : "Disabled"
         workspaceTriggerPillLabel.textColor = workspaceTriggerEnabled ? CaffPanelStyle.good : CaffPanelStyle.inkTertiary
@@ -202,8 +207,7 @@ extension AppDelegate {
             checkbox.controlSize = .small
         }
 
-        processIdentifiersField.placeholderString = "codex, claude, node, python, cargo, swift"
-        processIdentifiersField.delegate = self
+        processIdentifiersField.placeholderString = "Process names or bundle IDs, comma-separated"
         workspacePathsField.placeholderString = "~/Desktop/code, /path/to/workspace"
         for field in [processIdentifiersField, workspacePathsField] {
             field.font = .systemFont(ofSize: 12)
@@ -212,8 +216,11 @@ extension AppDelegate {
         AppLabelStyle.configureSecondary(processTriggerStatusLabel)
         processTriggerStatusLabel.alignment = .left
         configurePillLabel(processTriggerPillLabel)
+        configurePillLabel(agentActivityPillLabel)
         AppLabelStyle.configureSecondary(agentActivityStatusLabel)
         agentActivityStatusLabel.alignment = .left
+        AppLabelStyle.configureSecondary(agentLastTouchLabel)
+        agentLastTouchLabel.alignment = .left
         AppLabelStyle.configureSecondary(workspaceTriggerStatusLabel)
         workspaceTriggerStatusLabel.alignment = .left
         configurePillLabel(workspaceTriggerPillLabel)
@@ -448,22 +455,22 @@ extension AppDelegate {
 
     private func automationViews() -> [NSView] {
         [
+            agentActivityHookGroup(),
+            divider(),
             automationTriggerGroup(
-                title: "Auto-start for agent processes",
-                subtitle: "Caff starts whenever any watched process is running",
+                title: "Optional process trigger",
+                subtitle: "Fallback wake lock based on watched process names",
                 control: processTriggerCheckbox,
                 trailing: statusPillView(processTriggerPillLabel),
                 views: [
-                    processChipsView(),
                     insetView(processIdentifiersField, top: 2, bottom: 8),
-                    insetView(processTriggerStatusLabel, top: 0, bottom: 4),
-                    insetView(agentActivityStatusLabel, top: 0, bottom: 12)
+                    insetView(processTriggerStatusLabel, top: 0, bottom: 12)
                 ]
             ),
             divider(),
             automationTriggerGroup(
-                title: "Auto-start for workspace activity",
-                subtitle: "Trigger based on the foreground window's working directory",
+                title: "Optional workspace trigger",
+                subtitle: "Fallback wake lock based on configured workspace paths",
                 control: workspaceTriggerCheckbox,
                 trailing: statusPillView(workspaceTriggerPillLabel),
                 views: [
@@ -488,6 +495,43 @@ extension AppDelegate {
         stack.orientation = .vertical
         stack.alignment = .width
         stack.spacing = 10
+        return stack
+    }
+
+    private func agentActivityHookGroup() -> NSView {
+        let icon = symbolTile(
+            symbolName: "bolt.fill",
+            fill: CaffPanelStyle.accentSoft,
+            tint: CaffPanelStyle.accent,
+            size: 28
+        )
+        let title = NSTextField(labelWithString: "Agent Activity Hook")
+        CaffPanelStyle.configureTitle(title)
+        let subtitle = NSTextField(labelWithString: "Refreshes Caff when Codex or Claude hook events arrive")
+        CaffPanelStyle.configureBody(subtitle)
+        let labels = NSStackView(views: [title, subtitle])
+        labels.orientation = .vertical
+        labels.alignment = .leading
+        labels.spacing = 3
+
+        let spacer = NSView()
+        let row = NSStackView(views: [icon, labels, spacer, statusPillView(agentActivityPillLabel)])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 12
+        row.translatesAutoresizingMaskIntoConstraints = false
+        labels.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let stack = NSStackView(views: [
+            paddedRow(row),
+            insetView(agentActivityStatusLabel, top: 0, bottom: 4),
+            insetView(agentLastTouchLabel, top: 0, bottom: 12)
+        ])
+        stack.orientation = .vertical
+        stack.alignment = .width
+        stack.spacing = 0
+        stack.translatesAutoresizingMaskIntoConstraints = false
         return stack
     }
 
@@ -638,63 +682,6 @@ extension AppDelegate {
             view.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -bottom)
         ])
         return container
-    }
-
-    private func processChipsView() -> NSView {
-        processChipsStack.orientation = .horizontal
-        processChipsStack.alignment = .centerY
-        processChipsStack.spacing = 6
-        processChipsStack.edgeInsets = NSEdgeInsets(top: 4, left: 18, bottom: 8, right: 18)
-        updateProcessChips()
-        return processChipsStack
-    }
-
-    private func updateProcessChips() {
-        for view in processChipsStack.arrangedSubviews {
-            processChipsStack.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
-
-        let identifiers = processIdentifiersField.stringValue
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        let visibleIdentifiers = identifiers.isEmpty ? ProcessTriggerConfiguration.agentDefaults.identifiers : identifiers
-        for identifier in visibleIdentifiers {
-            processChipsStack.addArrangedSubview(chipLabel(identifier))
-        }
-    }
-
-    private func chipLabel(_ text: String) -> NSView {
-        let label = NSTextField(labelWithString: text)
-        label.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        label.textColor = CaffPanelStyle.inkSecondary
-        label.alignment = .center
-
-        let container = NSView()
-        container.translatesAutoresizingMaskIntoConstraints = false
-        container.wantsLayer = true
-        container.layer?.cornerRadius = 6
-        container.layer?.backgroundColor = CaffPanelStyle.sunken.cgColor
-        container.layer?.borderWidth = 1
-        container.layer?.borderColor = CaffPanelStyle.lineStrong.cgColor
-        container.addSubview(label)
-        label.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            container.heightAnchor.constraint(equalToConstant: 26),
-            label.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
-            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14)
-        ])
-        return container
-    }
-
-    func controlTextDidChange(_ notification: Notification) {
-        guard notification.object as? NSTextField === processIdentifiersField else {
-            return
-        }
-
-        updateProcessChips()
     }
 
     private func configurePillLabel(_ label: NSTextField) {
