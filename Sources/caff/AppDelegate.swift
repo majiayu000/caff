@@ -4,7 +4,6 @@ import CaffCore
 final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let powerAssertions = PowerAssertionController()
-    let agentRunner = AgentProcessRunner()
     let windowStatusLabel = NSTextField(labelWithString: "Off")
     let heroEyebrowLabel = NSTextField(labelWithString: "READY - STANDBY")
     let heroTitleLabel = NSTextField(labelWithString: "Ready to keep awake")
@@ -40,16 +39,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     let notificationBridge = NotificationBridge()
     private let settingsStore = AppSettingsStore()
     let statusStore = CaffStatusStore()
-    lazy var agentLauncherPanel = AgentLauncherPanel(
-        onLaunch: { [weak self] command in self?.launchAgentCommand(command) },
-        onReleaseAssertion: { [weak self] in self?.releaseLauncherAssertionOnly() },
-        onTerminate: { [weak self] in self?.confirmTerminateAgentCommand() },
-        onError: { [weak self] error in self?.showError(error) }
-    )
     var startButtons: [NSButton] = []
     var controlWindow: NSWindow?
     var activeSession: WakeSession?
-    var releasedLauncherSession: WakeSession?
     var history: [SessionHistoryEntry] = []
     var settings = AppSettings.standard
     var lastErrorMessage: String?
@@ -261,9 +253,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
 
     func stopSession(
         result: SessionHistoryResult,
-        errorMessage: String? = nil,
-        exitStatus: Int32? = nil,
-        terminationReason: String? = nil
+        errorMessage: String? = nil
     ) {
         let sessionToRecord = activeSession
         do {
@@ -272,9 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
                 recordHistory(
                     for: sessionToRecord,
                     result: result,
-                    errorMessage: errorMessage,
-                    exitStatus: exitStatus,
-                    terminationReason: terminationReason
+                    errorMessage: errorMessage
                 )
                 sendNotification(title: "Caff stopped", body: sessionToRecord.reason)
             }

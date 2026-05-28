@@ -21,19 +21,20 @@ extension AppDelegate {
         updateTimer = nil
     }
 
+    func stopCurrentSessionFromUI() {
+        cancelAgentActivityCooldown()
+        stopSession(result: .stopped)
+    }
+
     func recordHistory(
         for session: WakeSession,
         result: SessionHistoryResult,
-        errorMessage: String? = nil,
-        exitStatus: Int32? = nil,
-        terminationReason: String? = nil
+        errorMessage: String? = nil
     ) {
         let entry = SessionHistoryEntry(
             session: session,
             result: result,
-            errorMessage: errorMessage,
-            exitStatus: exitStatus,
-            terminationReason: terminationReason
+            errorMessage: errorMessage
         )
         history = historyStore.append(entry, to: history)
     }

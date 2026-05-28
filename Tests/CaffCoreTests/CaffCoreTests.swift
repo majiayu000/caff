@@ -72,17 +72,24 @@ private let now = Date(timeIntervalSince1970: 1_000)
     #expect(historyEntry.result == SessionHistoryResult.stopped)
     #expect(historyEntry.summary == "Stopped: Process - 1 Hour")
 
-    let exitedHistoryEntry = SessionHistoryEntry(
-        session: proofSession,
-        endedAt: now.addingTimeInterval(180),
-        result: .exited,
-        errorMessage: "codex exited with status 0",
-        exitStatus: 0,
-        terminationReason: "exit"
-    )
-    #expect(exitedHistoryEntry.exitStatus == 0)
-    #expect(exitedHistoryEntry.terminationReason == "exit")
-    #expect(exitedHistoryEntry.summary == "Exited: Process - exit 0")
+    let legacyHistoryData = Data("""
+    [
+      {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "startedAt": 1000,
+        "endedAt": 1120,
+        "source": "Launcher",
+        "reason": "Agent command: codex",
+        "durationLabel": "Indefinitely",
+        "assertionKinds": ["PreventUserIdleSystemSleep"],
+        "result": "exited",
+        "errorMessage": "codex exited with status 0"
+      }
+    ]
+    """.utf8)
+    let legacyHistory = try JSONDecoder().decode([SessionHistoryEntry].self, from: legacyHistoryData)
+    #expect(legacyHistory.first?.result == .stopped)
+    #expect(legacyHistory.first?.summary == "Stopped: Launcher - Indefinitely")
 
     do {
         try policy.validate(duration: .oneHour, powerSource: .batteryPower)
@@ -158,17 +165,7 @@ private let now = Date(timeIntervalSince1970: 1_000)
     #expect(inactiveState == .inactive)
 }
 
-@Test func agentCommandAndRemoteControlParsing() throws {
-    #expect(AgentCommandDefinition.builtInExamples.map(\.name) == ["codex", "claude", "npm test", "cargo test"])
-    #expect(
-        try AgentCommandParser.tokenizeArguments("--flag \"hello world\" 'two words'") ==
-            ["--flag", "hello world", "two words"]
-    )
-    #expect(
-        try AgentCommandParser.parseEnvironment("FOO=bar, EMPTY=, PATH=/tmp/bin") ==
-            ["FOO": "bar", "EMPTY": "", "PATH": "/tmp/bin"]
-    )
-
+@Test func remoteControlParsing() throws {
     #expect(try RemoteControlParser.duration(minutes: "45").minutes == 45)
     #expect(try RemoteControlParser.duration(minutes: nil) == .indefinitely)
     #expect(try RemoteControlParser.source("url") == .url)
