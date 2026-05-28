@@ -61,7 +61,8 @@ extension AppDelegate {
             session: activeSession,
             errorMessage: lastErrorMessage,
             agentActivity: agentEvaluation.summary,
-            agentCooldownUntil: agentEvaluation.cooldownUntil
+            agentCooldownUntil: agentEvaluation.cooldownUntil,
+            lastAgentTouch: lastAgentTouch
         ))
     }
 

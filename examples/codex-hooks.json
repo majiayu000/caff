@@ -1,0 +1,59 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "/Applications/Caff.app/Contents/MacOS/Caff agent-touch --source codex --cooldown-seconds 1800 >/dev/null 2>&1",
+            "timeout": 10,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "/Applications/Caff.app/Contents/MacOS/Caff agent-touch --source codex --cooldown-seconds 1800 >/dev/null 2>&1",
+            "timeout": 10,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "/Applications/Caff.app/Contents/MacOS/Caff agent-touch --source codex --cooldown-seconds 1800 >/dev/null 2>&1",
+            "timeout": 10,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "/Applications/Caff.app/Contents/MacOS/Caff agent-touch --source codex --cooldown-seconds 1800 >/dev/null 2>&1",
+            "timeout": 10,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "/Applications/Caff.app/Contents/MacOS/Caff agent-touch --source codex --cooldown-seconds 1800 >/dev/null 2>&1",
+            "timeout": 10,
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  }
+}
