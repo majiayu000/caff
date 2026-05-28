@@ -14,7 +14,7 @@ enum CaffCommandLineError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case .missingCommand:
-            return "Missing command. Use: caff start|stop|status"
+            return "Missing command. Use: caff start|stop|status|agent-touch"
         case let .missingValue(option):
             return "Missing value for \(option)"
         case let .unknownCommand(command):
@@ -51,6 +51,12 @@ final class CaffCommandLineController {
             RemoteCommandBridge.post([RemoteCommandBridge.Key.action: "stop"])
             Thread.sleep(forTimeInterval: 0.35)
             print("stop command sent")
+        case "agent-touch":
+            let options = try parseAgentTouchOptions(rest)
+            try ensureAppRunning()
+            RemoteCommandBridge.post(options)
+            Thread.sleep(forTimeInterval: 0.35)
+            print("agent touch sent")
         case "status":
             try rejectUnexpectedOptions(rest)
             try ensureAppRunning()
@@ -82,6 +88,25 @@ final class CaffCommandLineController {
         }
         _ = try RemoteControlParser.duration(minutes: result[RemoteCommandBridge.Key.minutes])
         _ = try RemoteControlParser.source(result[RemoteCommandBridge.Key.source])
+        return result
+    }
+
+    private func parseAgentTouchOptions(_ arguments: [String]) throws -> [String: String] {
+        var result = [RemoteCommandBridge.Key.action: "agent-touch"]
+        var index = 0
+        while index < arguments.count {
+            let option = arguments[index]
+            switch option {
+            case "--source":
+                result[RemoteCommandBridge.Key.agentSource] = try value(after: option, in: arguments, index: &index)
+            case "--cooldown-seconds":
+                result[RemoteCommandBridge.Key.cooldownSeconds] = try value(after: option, in: arguments, index: &index)
+            default:
+                throw CaffCommandLineError.unknownOption(option)
+            }
+            index += 1
+        }
+        _ = try RemoteControlParser.cooldownSeconds(result[RemoteCommandBridge.Key.cooldownSeconds])
         return result
     }
 

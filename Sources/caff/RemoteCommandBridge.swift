@@ -10,6 +10,8 @@ enum RemoteCommandBridge {
         static let reason = "reason"
         static let displayAwake = "displayAwake"
         static let source = "source"
+        static let agentSource = "agentSource"
+        static let cooldownSeconds = "cooldownSeconds"
     }
 
     static func post(_ userInfo: [String: String]) {

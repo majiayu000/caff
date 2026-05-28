@@ -45,6 +45,10 @@ public enum RemainingTimeFormatter {
         }
 
         let remainingSeconds = max(0, Int(ceil(endDate.timeIntervalSince(now))))
+        return compactRemaining(untilSeconds: remainingSeconds)
+    }
+
+    public static func compactRemaining(untilSeconds remainingSeconds: Int) -> String {
         if remainingSeconds >= 3600 {
             let hours = remainingSeconds / 3600
             let minutes = (remainingSeconds % 3600) / 60

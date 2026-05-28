@@ -37,6 +37,7 @@ extension AppDelegate {
         processItem.state = processTriggerEnabled ? .on : .off
         menu.addItem(processItem)
         menu.addItem(disabledMenuItem(processTriggerSummary))
+        menu.addItem(disabledMenuItem(agentActivitySummary))
         let workspaceItem = menuItem("Auto Start for Workspace Activity", action: #selector(toggleWorkspaceTrigger))
         workspaceItem.state = workspaceTriggerEnabled ? .on : .off
         menu.addItem(workspaceItem)

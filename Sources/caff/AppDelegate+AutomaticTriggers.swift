@@ -136,10 +136,11 @@ extension AppDelegate {
         )
     }
 
-    private func syncAutomaticTriggerSession() {
+    func syncAutomaticTriggerSession() {
         guard let desiredTrigger = desiredAutomaticTrigger() else {
             if activeSession?.source == .process || activeSession?.source == .workspace {
                 stopSession(result: .stopped)
+                pollAgentActivity()
             }
             return
         }
@@ -189,7 +190,7 @@ extension AppDelegate {
             workspaceTriggerKeepingAwake = false
             workspaceTriggerTimer?.invalidate()
             workspaceTriggerTimer = nil
-        case .manual, .launcher, .cli, .url:
+        case .manual, .agent, .launcher, .cli, .url:
             break
         }
     }

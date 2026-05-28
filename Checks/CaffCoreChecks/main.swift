@@ -41,6 +41,10 @@ check(
     RemainingTimeFormatter.compactRemaining(now: now, until: Date(timeIntervalSince1970: 1_030)) == "30s",
     "short remaining time should show seconds"
 )
+check(
+    RemainingTimeFormatter.compactRemaining(untilSeconds: 1_800) == "30m",
+    "remaining seconds should render compact durations"
+)
 
 let options = SessionOptions(duration: .oneHour)
 check(options.keepDisplayAwake == false, "display sleep prevention should be opt-in")
@@ -175,6 +179,36 @@ let (inactiveEvaluation, inactiveState) = processTrigger.evaluate(
 check(!inactiveEvaluation.isKeepingAwake, "process trigger should stop after grace expires")
 check(inactiveState == .inactive, "expired process trigger should reset state")
 
+let agentTouch = Date(timeIntervalSince1970: 7_000)
+let agentState = AgentActivityCooldown.touch(source: " codex ", cooldownSeconds: 1_800, now: agentTouch)
+let activeAgentEvaluation = AgentActivityCooldown.evaluate(
+    state: agentState,
+    now: agentTouch.addingTimeInterval(60)
+)
+check(agentState.source == "codex", "agent activity should normalize source labels")
+check(activeAgentEvaluation.isKeepingAwake, "agent activity should keep awake during cooldown")
+check(
+    activeAgentEvaluation.cooldownUntil == agentTouch.addingTimeInterval(1_800),
+    "agent activity should expose cooldown end"
+)
+check(
+    activeAgentEvaluation.summary == "Agent activity: codex, sleep allowed in 29m",
+    "agent activity should expose remaining cooldown"
+)
+let refreshedAgentState = AgentActivityCooldown.touch(
+    source: "claude",
+    cooldownSeconds: 1_800,
+    now: agentTouch.addingTimeInterval(1_700)
+)
+check(
+    AgentActivityCooldown.evaluate(state: refreshedAgentState, now: agentTouch.addingTimeInterval(1_750)).isKeepingAwake,
+    "later agent activity should refresh the cooldown"
+)
+check(
+    !AgentActivityCooldown.evaluate(state: agentState, now: agentTouch.addingTimeInterval(1_801)).isKeepingAwake,
+    "agent activity should expire after cooldown"
+)
+
 let builtInCommands = AgentCommandDefinition.builtInExamples.map(\.name)
 check(builtInCommands == ["codex", "claude", "npm test", "cargo test"], "agent launcher should include expected built-in commands")
 do {
@@ -190,9 +224,13 @@ do {
     let remoteDuration = try RemoteControlParser.duration(minutes: "45")
     let defaultRemoteDuration = try RemoteControlParser.duration(minutes: nil)
     let urlRemoteSource = try RemoteControlParser.source("url")
+    let remoteCooldown = try RemoteControlParser.cooldownSeconds("1800")
+    let defaultRemoteCooldown = try RemoteControlParser.cooldownSeconds(nil)
     check(remoteDuration.minutes == 45, "remote control should parse minute durations")
     check(defaultRemoteDuration == .indefinitely, "remote control should default to indefinite duration")
     check(urlRemoteSource == .url, "remote control should parse URL source")
+    check(remoteCooldown == 1_800, "remote control should parse agent cooldown")
+    check(defaultRemoteCooldown == AgentActivityCooldown.defaultCooldownSeconds, "remote control should default agent cooldown")
     check(RemoteControlParser.bool("true"), "remote control should parse true booleans")
 } catch {
     failures.append("remote control parsing failed: \(error)")
@@ -205,6 +243,15 @@ do {
     check(error == .invalidDuration("0"), "remote control should report invalid duration value")
 } catch {
     failures.append("remote control duration rejected with unexpected error: \(error)")
+}
+
+do {
+    _ = try RemoteControlParser.cooldownSeconds("0")
+    failures.append("remote control should reject invalid cooldown seconds")
+} catch let error as RemoteControlError {
+    check(error == .invalidCooldownSeconds("0"), "remote control should report invalid cooldown value")
+} catch {
+    failures.append("remote control cooldown rejected with unexpected error: \(error)")
 }
 
 let workspaceTriggerConfig = WorkspaceTriggerConfiguration(
