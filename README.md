@@ -9,7 +9,20 @@ It uses the official IOKit power assertion API:
 
 ## Install
 
-For most users, download the latest release zip:
+Install with Homebrew:
+
+```bash
+brew install --cask majiayu000/caff/caff
+```
+
+Or tap first:
+
+```bash
+brew tap majiayu000/caff
+brew install --cask caff
+```
+
+You can also download the latest release zip:
 
 https://github.com/majiayu000/caff/releases/latest
 
