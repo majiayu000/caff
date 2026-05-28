@@ -7,27 +7,41 @@ It uses the official IOKit power assertion API:
 - `PreventUserIdleSystemSleep` keeps macOS from sleeping because the user is idle.
 - `NoDisplaySleepAssertion` is optional and keeps the display awake when enabled.
 
+## Install
+
+The simplest source install builds Caff locally and copies it to `/Applications`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/majiayu000/caff/main/scripts/install.sh | bash
+```
+
+This requires macOS 13+ and Xcode Command Line Tools because the installer builds the app from source. To install somewhere else:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/majiayu000/caff/main/scripts/install.sh | CAFF_INSTALL_DIR="$HOME/Applications" bash
+```
+
+For non-developer users, publish a GitHub Release zip:
+
+```bash
+./scripts/package_release.sh
+```
+
+Upload the generated `dist/Caff-<version>.zip` and `.sha256` files to the release. Users can unzip `Caff.app` and drag it to Applications.
+
 ## Quick Start
 
 Most users only need the manual controls:
 
-1. Build and open the app:
+1. Open Caff:
 
    ```bash
-   ./scripts/build_app.sh
-   open dist/Caff.app
+   open -a Caff
    ```
 
 2. Click `30 Minutes`, `1 Hour`, or `4 Hours`.
 3. Leave `Keep display awake` off unless the screen itself must stay on.
 4. When your task is done, click `Stop` from the control window or the `CAFF` menu bar item.
-
-To install it like a normal Mac app:
-
-```bash
-ditto dist/Caff.app /Applications/Caff.app
-open -a Caff
-```
 
 When Caff is running, look for `CAFF` in the macOS menu bar.
 
@@ -158,7 +172,13 @@ The menu includes `Show Caff` if the window is closed.
 
 ## Install and Open
 
-Caff does not require an installer. After building the app bundle, either run it from `dist`:
+Caff does not require a package installer. To build and install from source:
+
+```bash
+./scripts/install.sh
+```
+
+After building the app bundle, you can also run it from `dist`:
 
 ```bash
 open dist/Caff.app
