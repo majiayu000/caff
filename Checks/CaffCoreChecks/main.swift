@@ -167,13 +167,15 @@ do {
     failures.append("remote control duration rejected with unexpected error: \(error)")
 }
 
-do {
-    _ = try RemoteControlParser.source("process")
-    failures.append("remote control should reject removed trigger sources")
-} catch let error as RemoteControlError {
-    check(error == .invalidSource("process"), "remote control should report removed trigger sources")
-} catch {
-    failures.append("remote control source rejected with unexpected error: \(error)")
+for removedSource in ["process", "workspace"] {
+    do {
+        _ = try RemoteControlParser.source(removedSource)
+        failures.append("remote control should reject removed trigger source \(removedSource)")
+    } catch let error as RemoteControlError {
+        check(error == .invalidSource(removedSource), "remote control should report removed trigger source \(removedSource)")
+    } catch {
+        failures.append("remote control source \(removedSource) rejected with unexpected error: \(error)")
+    }
 }
 
 do {

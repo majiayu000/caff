@@ -114,11 +114,13 @@ private let now = Date(timeIntervalSince1970: 1_000)
         #expect(error == .invalidDuration("0"))
     }
 
-    do {
-        _ = try RemoteControlParser.source("process")
-        #expect(Bool(false), "remote control should reject removed trigger sources")
-    } catch let error as RemoteControlError {
-        #expect(error == .invalidSource("process"))
+    for removedSource in ["process", "workspace"] {
+        do {
+            _ = try RemoteControlParser.source(removedSource)
+            #expect(Bool(false), "remote control should reject removed trigger source \(removedSource)")
+        } catch let error as RemoteControlError {
+            #expect(error == .invalidSource(removedSource))
+        }
     }
 }
 
