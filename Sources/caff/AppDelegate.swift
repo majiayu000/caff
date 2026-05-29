@@ -19,22 +19,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let lidLimitLabel = NSTextField(labelWithString: "Lid close depends on macOS, power, and display setup.")
     let displayAwakeCheckbox = NSButton(checkboxWithTitle: "Keep display awake", target: nil, action: nil)
     let batteryPolicyCheckbox = NSButton(checkboxWithTitle: "Allow long sessions on battery", target: nil, action: nil)
-    let processTriggerCheckbox = NSButton(checkboxWithTitle: "Auto-start for agent processes", target: nil, action: nil)
-    let processIdentifiersField = NSTextField(
-        string: ProcessTriggerConfiguration.agentDefaults.identifiers.joined(separator: ", ")
-    )
-    let processTriggerPillLabel = NSTextField(labelWithString: "Disabled")
-    let processTriggerStatusLabel = NSTextField(labelWithString: "Process trigger idle")
     let agentActivityPillLabel = NSTextField(labelWithString: "Waiting")
     let agentActivityStatusLabel = NSTextField(labelWithString: "Agent activity idle")
     let agentLastTouchLabel = NSTextField(labelWithString: "Last touch: None")
     let hookManagementStatusLabel = NSTextField(labelWithString: "Hooks: Not installed by Caff")
     let installHooksButton = NSButton(title: "Install Hooks", target: nil, action: nil)
     let removeHooksButton = NSButton(title: "Remove Hooks", target: nil, action: nil)
-    let workspaceTriggerCheckbox = NSButton(checkboxWithTitle: "Auto-start for workspace activity", target: nil, action: nil)
-    let workspacePathsField = NSTextField(string: "")
-    let workspaceTriggerPillLabel = NSTextField(labelWithString: "Disabled")
-    let workspaceTriggerStatusLabel = NSTextField(labelWithString: "Workspace trigger idle")
     let notificationsCheckbox = NSButton(checkboxWithTitle: "Enable notifications", target: nil, action: nil)
     let historyStatusLabel = NSTextField(labelWithString: "History: Empty")
     let stopButton = NSButton(title: "Stop", target: nil, action: nil)
@@ -50,24 +40,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var settings = AppSettings.standard
     var lastErrorMessage: String?
     var updateTimer: Timer?
-    var processTriggerTimer: Timer?
     var agentActivityTimer: Timer?
-    var workspaceTriggerTimer: Timer?
     var agentActivityState: AgentActivityState?
-    var processTriggerState = ProcessTriggerState.inactive
-    var workspaceTriggerState = WorkspaceTriggerState.inactive
     var lastAgentTouch: AgentActivityTouch?
-    var processTriggerKeepingAwake = false
-    var workspaceTriggerKeepingAwake = false
-    var processTriggerReason = "Process trigger"
-    var workspaceTriggerReason = "Workspace trigger"
-    var processTriggerSummary = "Process trigger idle"
     var agentActivitySummary = "Agent activity idle"
-    var workspaceTriggerSummary = "Workspace trigger idle"
     var keepDisplayAwake = false
     var allowLongSessionsOnBattery = false
-    var processTriggerEnabled = false
-    var workspaceTriggerEnabled = false
     var notificationsEnabled = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -85,9 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         updateTimer?.invalidate()
-        processTriggerTimer?.invalidate()
         agentActivityTimer?.invalidate()
-        workspaceTriggerTimer?.invalidate()
         if let activeSession {
             recordHistory(for: activeSession, result: .stopped)
         }

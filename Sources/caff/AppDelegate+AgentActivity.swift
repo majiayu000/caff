@@ -53,7 +53,6 @@ extension AppDelegate {
             if activeSession?.source == .agent {
                 stopSession(result: .stopped)
             }
-            syncAutomaticTriggerSession()
             return
         }
 
@@ -72,7 +71,6 @@ extension AppDelegate {
             if activeSession?.source == .agent {
                 stopSession(result: .timedOut)
             }
-            syncAutomaticTriggerSession()
             return
         }
 
