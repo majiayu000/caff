@@ -2,6 +2,8 @@
 
 Caff is a small macOS menu bar app that keeps the machine awake while long-running agent tasks are active. It can be driven manually, by agent hook events, or by CLI/URL commands.
 
+![Caff control window](media/caff-control-window.png)
+
 It uses the official IOKit power assertion API:
 
 - `PreventUserIdleSystemSleep` keeps macOS from sleeping because the user is idle.
@@ -225,3 +227,11 @@ swift build
 swift run caff-core-checks
 ./scripts/build_app.sh
 ```
+
+## Release Notes
+
+See [CHANGELOG.md](CHANGELOG.md).
+
+## License
+
+Caff is available under the [MIT License](LICENSE).
