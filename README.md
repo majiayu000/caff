@@ -1,6 +1,6 @@
 # Caff
 
-Caff is a small macOS menu bar app that keeps the machine awake while long-running agent tasks are active. It can be driven manually, by watched processes, by workspace activity, by agent hook events, or by CLI/URL commands.
+Caff is a small macOS menu bar app that keeps the machine awake while long-running agent tasks are active. It can be driven manually, by agent hook events, or by CLI/URL commands.
 
 It uses the official IOKit power assertion API:
 
@@ -67,11 +67,9 @@ When Caff is running, look for `CAFF` in the macOS menu bar.
 | Keep the Mac awake for a known amount of time | Manual buttons: `30 Minutes`, `1 Hour`, `4 Hours` |
 | Keep the display on too | Turn on `Keep display awake` before starting |
 | Keep awake while Codex or Claude activity is happening | `agent-touch` hooks |
-| Coarse automatic detection by running process name | Process Trigger |
-| Project-specific activity based on file changes | Workspace Trigger |
 | Start, stop, or inspect Caff from scripts | CLI or `caff://` URLs |
 
-Start with manual mode. Turn on automation only when manual sessions are not enough.
+Start with manual mode. Turn on agent hooks when manual sessions are not enough for interactive Codex or Claude work.
 
 ## Language
 
@@ -79,7 +77,7 @@ Caff follows the preferred macOS language at launch and supports English and Sim
 
 ## What Caff Is Not
 
-Caff is not an agent launcher, terminal replacement, or job runner. Run Codex, Claude, tests, and scripts in your normal terminal or editor. Use Caff to keep the Mac awake while that work is active.
+Caff is not an agent launcher, terminal replacement, job runner, or generic process/workspace watcher. Run Codex, Claude, tests, and scripts in your normal terminal or editor. Use Caff to keep the Mac awake while that work is active.
 
 ## Current Scope
 
@@ -92,7 +90,7 @@ The app opens a scrollable control window with:
 - a hero status card for the current wake-lock state
 - current session details reported by Caff
 - manual wake-lock duration controls
-- agent-activity, process, and workspace automation status
+- agent activity hook status and hook management
 - notification and local history controls
 
 ## Safety Policy
@@ -100,25 +98,8 @@ The app opens a scrollable control window with:
 Caff keeps display sleep prevention opt-in and applies a visible safety policy before starting sessions:
 
 - manual sessions are capped at 4 hours, including the "Indefinitely" action
-- trigger-driven stop behavior has a 60 second grace-period setting
 - long sessions are blocked while on battery unless the user explicitly enables them
 - assertion and policy failures stay visible in the menu bar, menu, and control window
-
-## Process Trigger
-
-Caff can watch a configurable comma-separated list of process names or bundle identifiers.
-The default list is `codex, claude, node, python, cargo, swift`.
-When a matching process exists, Caff starts a process-sourced keep-awake session and shows the triggering process in the status snapshot.
-When no match remains, Caff keeps the session alive for the configured grace period before stopping it.
-
-## Workspace Trigger
-
-Caff can watch configured workspace paths for deterministic activity signals:
-
-- `.git/index.lock`
-- recently modified regular files
-
-Workspace triggers are opt-in and require explicit paths. When activity stops, Caff keeps the session alive for the configured grace period before stopping it.
 
 ## Notifications and History
 
@@ -154,7 +135,7 @@ dist/Caff.app/Contents/MacOS/Caff agent-touch --source codex --cooldown-seconds 
 
 ## Agent Activity Hooks
 
-Use this mode when a long-running interactive agent may stay open after it has finished answering. Process detection alone cannot reliably tell whether a session is still active.
+Use this mode when a long-running interactive agent may stay open after it has finished answering. Hook events provide the explicit activity signal Caff uses for automation.
 
 Configure your agent hooks to run:
 
@@ -225,7 +206,7 @@ When Caff is running, look for `CAFF` in the macOS menu bar. Use the menu bar it
 
 When a wake session is active, Caff shows:
 
-- session source: `Manual`, `Process`, `Workspace`, `Agent`, `CLI`, or `URL`
+- session source: `Manual`, `Agent`, `CLI`, or `URL`
 - assertion types requested by Caff
 - assertion reason
 - start time

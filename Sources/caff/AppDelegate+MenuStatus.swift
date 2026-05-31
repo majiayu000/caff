@@ -33,15 +33,7 @@ extension AppDelegate {
         let batteryItem = menuItem(text.allowBatteryLongSessions, action: #selector(toggleBatteryPolicy))
         batteryItem.state = allowLongSessionsOnBattery ? .on : .off
         menu.addItem(batteryItem)
-        let processItem = menuItem(text.autoProcess, action: #selector(toggleProcessTrigger))
-        processItem.state = processTriggerEnabled ? .on : .off
-        menu.addItem(processItem)
-        menu.addItem(disabledMenuItem(text.localizedStatus(processTriggerSummary)))
         menu.addItem(disabledMenuItem(text.localizedStatus(agentActivitySummary)))
-        let workspaceItem = menuItem(text.autoWorkspace, action: #selector(toggleWorkspaceTrigger))
-        workspaceItem.state = workspaceTriggerEnabled ? .on : .off
-        menu.addItem(workspaceItem)
-        menu.addItem(disabledMenuItem(text.localizedStatus(workspaceTriggerSummary)))
         menu.addItem(disabledMenuItem(text.lidLimitMenu))
         let notificationsItem = menuItem(text.enableNotifications, action: #selector(toggleNotifications))
         notificationsItem.state = notificationsEnabled ? .on : .off

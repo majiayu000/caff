@@ -44,7 +44,7 @@ struct AppText {
     var wakeLock: String { choose(en: "Wake Lock", zh: "防休眠") }
     var wakeLockSubtitle: String { choose(en: "Keep your Mac awake while agents are working", zh: "Agent 工作时保持 Mac 醒着") }
     var automation: String { choose(en: "Automation", zh: "自动化") }
-    var automationSubtitle: String { choose(en: "Agent hook events first, with optional local triggers", zh: "优先使用 Agent hook 事件，也可启用本地触发器") }
+    var automationSubtitle: String { choose(en: "Agent hook events keep Caff in sync with active CLI work", zh: "Agent hook 事件让 Caff 与活跃的 CLI 工作保持同步") }
     var history: String { choose(en: "History", zh: "历史记录") }
     var historySubtitle: String { choose(en: "Recent wake-lock sessions and trigger events", zh: "最近的防休眠会话和触发事件") }
     var lidLimit: String { choose(en: "Lid close depends on macOS, power, and display setup.", zh: "合盖行为取决于 macOS、电源和显示器设置。") }
@@ -53,14 +53,8 @@ struct AppText {
     var keepDisplayAwakeSubtitle: String { choose(en: "Prevents the screen from dimming or turning off", zh: "防止屏幕变暗或关闭") }
     var allowBatteryLongSessions: String { choose(en: "Allow long sessions on battery", zh: "允许电池供电时长时间运行") }
     var allowBatteryLongSessionsSubtitle: String { choose(en: "Skip the safety timeout when running on battery power", zh: "使用电池供电时跳过安全时长限制") }
-    var autoProcess: String { choose(en: "Auto-start for agent processes", zh: "Agent 进程自动启动") }
-    var autoWorkspace: String { choose(en: "Auto-start for workspace activity", zh: "工作区活动自动启动") }
     var manualControl: String { choose(en: "Manual control", zh: "手动控制") }
     var manualControlSubtitle: String { choose(en: "Pick a duration or stop the current wake lock", zh: "选择持续时间，或停止当前防休眠") }
-    var optionalProcessTrigger: String { choose(en: "Optional process trigger", zh: "可选进程触发器") }
-    var optionalProcessTriggerSubtitle: String { choose(en: "Fallback wake lock based on watched process names", zh: "根据监控的进程名兜底保持唤醒") }
-    var optionalWorkspaceTrigger: String { choose(en: "Optional workspace trigger", zh: "可选工作区触发器") }
-    var optionalWorkspaceTriggerSubtitle: String { choose(en: "Fallback wake lock based on configured workspace paths", zh: "根据配置的工作区路径兜底保持唤醒") }
     var enableNotifications: String { choose(en: "Enable notifications", zh: "启用通知") }
     var enableNotificationsSubtitle: String { choose(en: "Notify when Caff starts or stops", zh: "Caff 开始或停止时发送通知") }
     var agentActivityHook: String { choose(en: "Agent Activity Hook", zh: "Agent 活动 Hook") }
@@ -72,13 +66,11 @@ struct AppText {
     var caffeinatedAwake: String { choose(en: "CAFFEINATED - AWAKE", zh: "防休眠中 - 醒着") }
     var needsAttention: String { choose(en: "NEEDS ATTENTION", zh: "需要处理") }
     var readyTitle: String { choose(en: "Ready to keep awake", zh: "已准备好防休眠") }
-    var readyMeta: String { choose(en: "No active power assertion - choose a duration or automation trigger", zh: "当前没有电源断言 - 请选择时长或自动触发器") }
+    var readyMeta: String { choose(en: "No active power assertion - choose a duration or use agent hooks", zh: "当前没有电源断言 - 请选择时长或使用 Agent hooks") }
     var noActiveAssertion: String { choose(en: "No active power assertion", zh: "当前没有电源断言") }
     var displayWillStayOn: String { choose(en: "Display will stay on", zh: "屏幕将保持常亮") }
     var macWillStayAwake: String { choose(en: "Mac will stay awake", zh: "Mac 将保持醒着") }
     var wakeLockNeedsAttention: String { choose(en: "Wake lock needs attention", zh: "防休眠需要处理") }
-    var processPlaceholder: String { choose(en: "Process names or bundle IDs, comma-separated", zh: "进程名或 Bundle ID，用逗号分隔") }
-    var workspacePlaceholder: String { choose(en: "~/Desktop/code, /path/to/workspace", zh: "~/Desktop/code, /工作区/路径") }
     var defaultReason: String { choose(en: "Caff is keeping this Mac awake", zh: "Caff 正在保持这台 Mac 醒着") }
     var caffStarted: String { choose(en: "Caff started", zh: "Caff 已开始") }
     var caffStopped: String { choose(en: "Caff stopped", zh: "Caff 已停止") }
@@ -106,10 +98,6 @@ struct AppText {
             return source.label
         case (.simplifiedChinese, .manual):
             return "手动"
-        case (.simplifiedChinese, .process):
-            return "进程"
-        case (.simplifiedChinese, .workspace):
-            return "工作区"
         case (.simplifiedChinese, .agent):
             return "Agent"
         case (.simplifiedChinese, .cli):
@@ -160,7 +148,7 @@ struct AppText {
             return policy.summary
         }
         let battery = policy.allowLongSessionsOnBattery ? "允许长时间电池运行" : "禁止长时间电池运行"
-        return "最长 \(SafetyPolicy.formatMinutes(policy.maximumSessionMinutes))，宽限 \(policy.stopGracePeriodSeconds) 秒，\(battery)"
+        return "最长 \(SafetyPolicy.formatMinutes(policy.maximumSessionMinutes))，\(battery)"
     }
 
     func localizedSafetyNotes(_ notes: [String]) -> String {
@@ -176,16 +164,6 @@ struct AppText {
         }
 
         let replacements = [
-            ("Process trigger idle", "进程触发器空闲"),
-            ("Process trigger watching", "进程触发器监控中"),
-            ("Process trigger active", "进程触发器活动中"),
-            ("Process trigger grace", "进程触发器宽限中"),
-            ("Process trigger", "进程触发器"),
-            ("Workspace trigger idle", "工作区触发器空闲"),
-            ("Workspace trigger watching", "工作区触发器监控中"),
-            ("Workspace trigger active", "工作区触发器活动中"),
-            ("Workspace trigger grace", "工作区触发器宽限中"),
-            ("Workspace trigger", "工作区触发器"),
             ("Agent activity idle", "Agent 活动空闲"),
             ("Agent activity", "Agent 活动"),
             ("sleep allowed in", "允许休眠倒计时"),

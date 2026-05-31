@@ -133,10 +133,6 @@ extension AppDelegate {
         updateHero()
         displayAwakeCheckbox.state = keepDisplayAwake ? .on : .off
         batteryPolicyCheckbox.state = allowLongSessionsOnBattery ? .on : .off
-        processTriggerCheckbox.state = processTriggerEnabled ? .on : .off
-        processTriggerPillLabel.stringValue = processTriggerEnabled ? text.watching : text.disabled
-        processTriggerPillLabel.textColor = processTriggerEnabled ? CaffPanelStyle.good : CaffPanelStyle.inkTertiary
-        processTriggerStatusLabel.stringValue = text.localizedStatus(processTriggerSummary)
         let agentEvaluation = AgentActivityCooldown.evaluate(state: agentActivityState)
         agentActivityPillLabel.stringValue = agentEvaluation.isKeepingAwake ? text.active : text.waiting
         agentActivityPillLabel.textColor = agentEvaluation.isKeepingAwake ? CaffPanelStyle.good : CaffPanelStyle.inkTertiary
@@ -144,10 +140,6 @@ extension AppDelegate {
         agentLastTouchLabel.stringValue = lastAgentTouch.map {
             text.choose(en: "Last touch: \($0.source) at \(formatDate($0.receivedAt))", zh: "最近触发：\($0.source)，\(formatDate($0.receivedAt))")
         } ?? text.localizedStatus("Last touch: None")
-        workspaceTriggerCheckbox.state = workspaceTriggerEnabled ? .on : .off
-        workspaceTriggerPillLabel.stringValue = workspaceTriggerEnabled ? text.watching : text.disabled
-        workspaceTriggerPillLabel.textColor = workspaceTriggerEnabled ? CaffPanelStyle.good : CaffPanelStyle.inkTertiary
-        workspaceTriggerStatusLabel.stringValue = text.localizedStatus(workspaceTriggerSummary)
         notificationsCheckbox.state = notificationsEnabled ? .on : .off
         historyStatusLabel.stringValue = historyMenuSummary()
         clearHistoryButton.isEnabled = !history.isEmpty
@@ -191,31 +183,16 @@ extension AppDelegate {
         displayAwakeCheckbox.action = #selector(toggleDisplayAwake)
         batteryPolicyCheckbox.target = self
         batteryPolicyCheckbox.action = #selector(toggleBatteryPolicy)
-        processTriggerCheckbox.target = self
-        processTriggerCheckbox.action = #selector(toggleProcessTrigger)
-        workspaceTriggerCheckbox.target = self
-        workspaceTriggerCheckbox.action = #selector(toggleWorkspaceTrigger)
         notificationsCheckbox.target = self
         notificationsCheckbox.action = #selector(toggleNotifications)
         for checkbox in [
             displayAwakeCheckbox,
             batteryPolicyCheckbox,
-            processTriggerCheckbox,
-            workspaceTriggerCheckbox,
             notificationsCheckbox
         ] {
             checkbox.controlSize = .small
         }
 
-        processIdentifiersField.placeholderString = text.processPlaceholder
-        workspacePathsField.placeholderString = text.workspacePlaceholder
-        for field in [processIdentifiersField, workspacePathsField] {
-            field.font = .systemFont(ofSize: 12)
-            field.controlSize = .small
-        }
-        AppLabelStyle.configureSecondary(processTriggerStatusLabel)
-        processTriggerStatusLabel.alignment = .left
-        configurePillLabel(processTriggerPillLabel)
         configurePillLabel(agentActivityPillLabel)
         AppLabelStyle.configureSecondary(agentActivityStatusLabel)
         agentActivityStatusLabel.alignment = .left
@@ -223,9 +200,6 @@ extension AppDelegate {
         agentLastTouchLabel.alignment = .left
         AppLabelStyle.configureSecondary(hookManagementStatusLabel)
         hookManagementStatusLabel.alignment = .left
-        AppLabelStyle.configureSecondary(workspaceTriggerStatusLabel)
-        workspaceTriggerStatusLabel.alignment = .left
-        configurePillLabel(workspaceTriggerPillLabel)
         AppLabelStyle.configureSecondary(historyStatusLabel)
         historyStatusLabel.alignment = .left
 
@@ -464,29 +438,7 @@ extension AppDelegate {
 
     private func automationViews() -> [NSView] {
         [
-            agentActivityHookGroup(),
-            divider(),
-            automationTriggerGroup(
-                title: text.optionalProcessTrigger,
-                subtitle: text.optionalProcessTriggerSubtitle,
-                control: processTriggerCheckbox,
-                trailing: statusPillView(processTriggerPillLabel),
-                views: [
-                    insetView(processIdentifiersField, top: 2, bottom: 8),
-                    insetView(processTriggerStatusLabel, top: 0, bottom: 12)
-                ]
-            ),
-            divider(),
-            automationTriggerGroup(
-                title: text.optionalWorkspaceTrigger,
-                subtitle: text.optionalWorkspaceTriggerSubtitle,
-                control: workspaceTriggerCheckbox,
-                trailing: statusPillView(workspaceTriggerPillLabel),
-                views: [
-                    insetView(workspacePathsField, top: 2, bottom: 8),
-                    insetView(workspaceTriggerStatusLabel, top: 0, bottom: 12)
-                ]
-            )
+            agentActivityHookGroup()
         ]
     }
 
@@ -654,23 +606,6 @@ extension AppDelegate {
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         trailing?.setContentHuggingPriority(.required, for: .horizontal)
         return paddedRow(row)
-    }
-
-    private func automationTriggerGroup(
-        title: String,
-        subtitle: String,
-        control: NSView,
-        trailing: NSView,
-        views: [NSView]
-    ) -> NSView {
-        let stack = NSStackView(views: [
-            settingsRow(title: title, subtitle: subtitle, control: control, trailing: trailing)
-        ] + views)
-        stack.orientation = .vertical
-        stack.alignment = .width
-        stack.spacing = 0
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        return stack
     }
 
     private func paddedRow(_ row: NSView) -> NSView {

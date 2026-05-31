@@ -31,18 +31,15 @@ public enum SafetyPolicyError: Error, CustomStringConvertible, Equatable {
 
 public struct SafetyPolicy: Equatable, Sendable {
     public var maximumSessionMinutes: Int
-    public var stopGracePeriodSeconds: Int
     public var longSessionBatteryThresholdMinutes: Int
     public var allowLongSessionsOnBattery: Bool
 
     public init(
         maximumSessionMinutes: Int = 240,
-        stopGracePeriodSeconds: Int = 60,
         longSessionBatteryThresholdMinutes: Int = 60,
         allowLongSessionsOnBattery: Bool = false
     ) {
         self.maximumSessionMinutes = maximumSessionMinutes
-        self.stopGracePeriodSeconds = stopGracePeriodSeconds
         self.longSessionBatteryThresholdMinutes = longSessionBatteryThresholdMinutes
         self.allowLongSessionsOnBattery = allowLongSessionsOnBattery
     }
@@ -50,7 +47,7 @@ public struct SafetyPolicy: Equatable, Sendable {
     public static let standard = SafetyPolicy()
 
     public var summary: String {
-        "Max \(Self.formatMinutes(maximumSessionMinutes)), grace \(stopGracePeriodSeconds)s, long battery \(allowLongSessionsOnBattery ? "allowed" : "blocked")"
+        "Max \(Self.formatMinutes(maximumSessionMinutes)), long battery \(allowLongSessionsOnBattery ? "allowed" : "blocked")"
     }
 
     public func validate(duration: SessionDuration, powerSource: PowerSourceState) throws {
@@ -76,7 +73,6 @@ public struct SafetyPolicy: Equatable, Sendable {
 
     public func sessionNotes(for duration: SessionDuration, powerSource: PowerSourceState) -> [String] {
         var notes = ["Max: \(Self.formatMinutes(maximumSessionMinutes))"]
-        notes.append("Grace: \(stopGracePeriodSeconds)s")
         notes.append("Power: \(powerSource.label)")
 
         if duration.minutes == nil {
