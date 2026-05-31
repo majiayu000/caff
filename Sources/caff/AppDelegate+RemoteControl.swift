@@ -84,7 +84,7 @@ extension AppDelegate {
         let duration = try RemoteControlParser.duration(minutes: userInfo[RemoteCommandBridge.Key.minutes])
         let source = try RemoteControlParser.source(userInfo[RemoteCommandBridge.Key.source])
         keepDisplayAwake = RemoteControlParser.bool(userInfo[RemoteCommandBridge.Key.displayAwake])
-        let reason = userInfo[RemoteCommandBridge.Key.reason] ?? "Caff remote start"
+        let reason = userInfo[RemoteCommandBridge.Key.reason] ?? text.choose(en: "Caff remote start", zh: "Caff 远程启动")
         _ = startSession(duration: duration, source: source, reason: reason)
     }
 

@@ -71,6 +71,10 @@ When Caff is running, look for `CAFF` in the macOS menu bar.
 
 Start with manual mode. Turn on agent hooks when manual sessions are not enough for interactive Codex or Claude work.
 
+## Language
+
+Caff follows the preferred macOS language at launch and supports English and Simplified Chinese. English is the fallback language.
+
 ## What Caff Is Not
 
 Caff is not an agent launcher, terminal replacement, job runner, or generic process/workspace watcher. Run Codex, Claude, tests, and scripts in your normal terminal or editor. Use Caff to keep the Mac awake while that work is active.

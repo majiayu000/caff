@@ -11,42 +11,42 @@ extension AppDelegate {
     func rebuildMenu() {
         let menu = NSMenu()
         if let activeSession {
-            menu.addItem(disabledMenuItem("Running: \(activeSession.sourceLabel) - \(activeSession.duration.label)"))
-            menu.addItem(disabledMenuItem("Assertions: \(activeSession.assertionSummary)"))
-            menu.addItem(disabledMenuItem("Reason: \(activeSession.reason)"))
-            menu.addItem(disabledMenuItem("Safety: \(safetyNotes(for: activeSession).joined(separator: ", "))"))
-            menu.addItem(menuItem("Stop", action: #selector(stopSessionFromMenu)))
+            menu.addItem(disabledMenuItem(text.label(text.localizedStatus("Running"), "\(text.sourceLabel(activeSession.source)) - \(text.durationLabel(activeSession.duration))")))
+            menu.addItem(disabledMenuItem(text.label(text.localizedStatus("Assertions"), text.assertionSummary(activeSession.assertionSummary))))
+            menu.addItem(disabledMenuItem(text.label(text.localizedStatus("Reason"), activeSession.reason)))
+            menu.addItem(disabledMenuItem(text.label(text.localizedStatus("Safety"), text.localizedSafetyNotes(safetyNotes(for: activeSession)))))
+            menu.addItem(menuItem(text.stop, action: #selector(stopSessionFromMenu)))
         } else {
             if let lastErrorMessage {
-                menu.addItem(disabledMenuItem("Last error: \(lastErrorMessage)"))
+                menu.addItem(disabledMenuItem(text.label(text.localizedStatus("Last error"), lastErrorMessage)))
                 menu.addItem(.separator())
             }
-            menu.addItem(menuItem("Start Indefinitely", action: #selector(startIndefinitely)))
-            menu.addItem(menuItem("Start 30 Minutes", action: #selector(startThirtyMinutes)))
-            menu.addItem(menuItem("Start 1 Hour", action: #selector(startOneHour)))
-            menu.addItem(menuItem("Start 4 Hours", action: #selector(startFourHours)))
+            menu.addItem(menuItem(text.choose(en: "Start Indefinitely", zh: "开始无限期"), action: #selector(startIndefinitely)))
+            menu.addItem(menuItem(text.choose(en: "Start 30 Minutes", zh: "开始 30 分钟"), action: #selector(startThirtyMinutes)))
+            menu.addItem(menuItem(text.choose(en: "Start 1 Hour", zh: "开始 1 小时"), action: #selector(startOneHour)))
+            menu.addItem(menuItem(text.choose(en: "Start 4 Hours", zh: "开始 4 小时"), action: #selector(startFourHours)))
         }
         menu.addItem(.separator())
-        let displayItem = menuItem("Keep Display Awake", action: #selector(toggleDisplayAwake))
+        let displayItem = menuItem(text.keepDisplayAwake, action: #selector(toggleDisplayAwake))
         displayItem.state = keepDisplayAwake ? .on : .off
         menu.addItem(displayItem)
-        let batteryItem = menuItem("Allow Long Sessions on Battery", action: #selector(toggleBatteryPolicy))
+        let batteryItem = menuItem(text.allowBatteryLongSessions, action: #selector(toggleBatteryPolicy))
         batteryItem.state = allowLongSessionsOnBattery ? .on : .off
         menu.addItem(batteryItem)
-        menu.addItem(disabledMenuItem(agentActivitySummary))
-        menu.addItem(disabledMenuItem("Lid close depends on macOS power/display policy"))
-        let notificationsItem = menuItem("Enable Notifications", action: #selector(toggleNotifications))
+        menu.addItem(disabledMenuItem(text.localizedStatus(agentActivitySummary)))
+        menu.addItem(disabledMenuItem(text.lidLimitMenu))
+        let notificationsItem = menuItem(text.enableNotifications, action: #selector(toggleNotifications))
         notificationsItem.state = notificationsEnabled ? .on : .off
         menu.addItem(notificationsItem)
-        menu.addItem(menuItem("Menu Bar Mode: \(settings.menuBarDisplayMode.label)", action: #selector(cycleMenuBarMode)))
-        let launchWindowItem = menuItem("Show Window on Launch", action: #selector(toggleOpenWindowOnLaunch))
+        menu.addItem(menuItem(text.choose(en: "Menu Bar Mode: \(text.menuBarModeLabel(settings.menuBarDisplayMode))", zh: "菜单栏模式：\(text.menuBarModeLabel(settings.menuBarDisplayMode))"), action: #selector(cycleMenuBarMode)))
+        let launchWindowItem = menuItem(text.choose(en: "Show Window on Launch", zh: "启动时显示窗口"), action: #selector(toggleOpenWindowOnLaunch))
         launchWindowItem.state = settings.openControlWindowOnLaunch ? .on : .off
         menu.addItem(launchWindowItem)
         menu.addItem(disabledMenuItem(historyMenuSummary()))
-        menu.addItem(menuItem("Clear History", action: #selector(clearHistory)))
+        menu.addItem(menuItem(text.clearHistory, action: #selector(clearHistory)))
         menu.addItem(.separator())
-        menu.addItem(menuItem("Show Caff", action: #selector(showControlWindow)))
-        menu.addItem(menuItem("Quit Caff", action: #selector(quit), keyEquivalent: "q"))
+        menu.addItem(menuItem(text.choose(en: "Show Caff", zh: "显示 Caff"), action: #selector(showControlWindow)))
+        menu.addItem(menuItem(text.choose(en: "Quit Caff", zh: "退出 Caff"), action: #selector(quit), keyEquivalent: "q"))
         statusItem.menu = menu
     }
 
@@ -67,7 +67,7 @@ extension AppDelegate {
         case .countdown:
             return "CAFF \(activeSession.compactStatus())"
         case .source:
-            return "CAFF \(activeSession.sourceLabel)"
+            return "CAFF \(text.sourceLabel(activeSession.source))"
         }
     }
 

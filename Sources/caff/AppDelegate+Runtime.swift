@@ -41,10 +41,10 @@ extension AppDelegate {
 
     func historyMenuSummary() -> String {
         guard let latest = history.first else {
-            return "History: Empty"
+            return text.localizedStatus("History: Empty")
         }
 
-        return "History: \(latest.summary)"
+        return text.label(text.history, text.localizedStatus(latest.summary))
     }
 
     func sendNotification(title: String, body: String) {
@@ -68,14 +68,14 @@ extension AppDelegate {
 
     func showError(_ error: Error) {
         lastErrorMessage = String(describing: error)
-        sendNotification(title: "Caff error", body: lastErrorMessage ?? "Unknown error")
+        sendNotification(title: text.caffError, body: lastErrorMessage ?? text.unknownError)
         rebuildMenu()
         updateStatusTitle()
 
         let alert = NSAlert()
         alert.alertStyle = .critical
-        alert.messageText = "Caff could not update the wake session"
-        alert.informativeText = lastErrorMessage ?? "Unknown error"
+        alert.messageText = text.updateSessionFailed
+        alert.informativeText = lastErrorMessage ?? text.unknownError
         alert.runModal()
     }
 }
