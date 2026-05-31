@@ -2,8 +2,6 @@ import Foundation
 
 public enum SessionSource: String, CaseIterable, Sendable {
     case manual
-    case process
-    case workspace
     case agent
     case cli
     case url
@@ -12,10 +10,6 @@ public enum SessionSource: String, CaseIterable, Sendable {
         switch self {
         case .manual:
             return "Manual"
-        case .process:
-            return "Process"
-        case .workspace:
-            return "Workspace"
         case .agent:
             return "Agent"
         case .cli:
@@ -58,19 +52,6 @@ public struct WakeSession: Equatable, Sendable {
         keepDisplayAwake: Bool,
         errorMessage: String? = nil
     ) -> WakeSession {
-        WakeSession(
-            source: source,
-            duration: duration,
-            startedAt: startedAt,
-            endDate: endDate,
-            keepDisplayAwake: keepDisplayAwake,
-            reason: reason,
-            activeAssertions: activeAssertions,
-            errorMessage: errorMessage
-        )
-    }
-
-    public func updatingSource(_ source: SessionSource, reason: String) -> WakeSession {
         WakeSession(
             source: source,
             duration: duration,
