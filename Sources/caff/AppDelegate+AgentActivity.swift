@@ -22,6 +22,35 @@ extension AppDelegate {
         agentActivityTimer = nil
     }
 
+    func refreshAgentActivityLanguageText() {
+        let evaluation = AgentActivityCooldown.evaluate(state: agentActivityState)
+        agentActivitySummary = text.localizedStatus(evaluation.summary)
+
+        guard evaluation.isKeepingAwake,
+              activeSession?.source == .agent,
+              let state = agentActivityState,
+              let cooldownUntil = evaluation.cooldownUntil else {
+            return
+        }
+
+        let options = SessionOptions(
+            duration: agentActivityDuration(),
+            source: .agent,
+            keepDisplayAwake: keepDisplayAwake,
+            reason: text.localizedStatus(evaluation.reason)
+        )
+        activeSession = WakeSession(
+            options: options,
+            startedAt: state.lastActivityAt,
+            activeAssertions: activeSession?.activeAssertions ?? powerAssertions.activeAssertions,
+            errorMessage: activeSession?.errorMessage,
+            endDate: agentActivitySessionEndDate(
+                state: state,
+                cooldownUntil: cooldownUntil
+            )
+        )
+    }
+
     @objc func pollAgentActivity() {
         syncAgentActivitySession()
         rebuildMenu()

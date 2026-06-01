@@ -75,7 +75,7 @@ Start with manual mode. Turn on agent hooks when manual sessions are not enough 
 
 ## Language
 
-Caff follows the preferred macOS language at launch and supports English and Simplified Chinese. English is the fallback language.
+Caff supports English and Simplified Chinese. It follows the preferred macOS language by default, and you can switch language from the menu bar or the control window settings without changing the system language. English is the fallback language.
 
 ## What Caff Is Not
 

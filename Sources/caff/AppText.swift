@@ -23,6 +23,26 @@ enum AppLanguage: String {
     }
 }
 
+enum AppLanguageMode: String, CaseIterable, Codable {
+    case system
+    case english
+    case simplifiedChinese
+
+    func resolvedLanguage(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        preferredLanguages: [String] = Locale.preferredLanguages
+    ) -> AppLanguage {
+        switch self {
+        case .system:
+            return .current(environment: environment, preferredLanguages: preferredLanguages)
+        case .english:
+            return .english
+        case .simplifiedChinese:
+            return .simplifiedChinese
+        }
+    }
+}
+
 struct AppText {
     let language: AppLanguage
 
@@ -83,6 +103,10 @@ struct AppText {
     var hooksRemoveFailed: String { choose(en: "Hooks: Remove failed", zh: "Hooks：删除失败") }
     var hooksInstalledTitle: String { choose(en: "Agent hooks installed", zh: "Agent hooks 已安装") }
     var hooksRemovedTitle: String { choose(en: "Agent hooks removed", zh: "Agent hooks 已删除") }
+    var settings: String { choose(en: "Settings", zh: "设置") }
+    var settingsSubtitle: String { choose(en: "Interface preferences", zh: "界面偏好") }
+    var languageLabel: String { choose(en: "Language", zh: "语言") }
+    var languageSubtitle: String { choose(en: "Controls Caff text without changing macOS language", zh: "切换 Caff 文本，不影响 macOS 系统语言") }
 
     func choose(en: String, zh: String) -> String {
         language == .simplifiedChinese ? zh : en
@@ -133,6 +157,23 @@ struct AppText {
             return "倒计时"
         case .source:
             return "来源"
+        }
+    }
+
+    func languageModeLabel(_ mode: AppLanguageMode) -> String {
+        switch (language, mode) {
+        case (.english, .system):
+            return "System"
+        case (.english, .english):
+            return "English"
+        case (.english, .simplifiedChinese):
+            return "Simplified Chinese"
+        case (.simplifiedChinese, .system):
+            return "跟随系统"
+        case (.simplifiedChinese, .english):
+            return "English"
+        case (.simplifiedChinese, .simplifiedChinese):
+            return "简体中文"
         }
     }
 

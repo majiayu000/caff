@@ -29,11 +29,30 @@ enum MenuBarDisplayMode: String, CaseIterable, Codable {
 struct AppSettings: Codable, Equatable {
     var menuBarDisplayMode: MenuBarDisplayMode
     var openControlWindowOnLaunch: Bool
+    var languageMode: AppLanguageMode
 
     static let standard = AppSettings(
         menuBarDisplayMode: .countdown,
-        openControlWindowOnLaunch: true
+        openControlWindowOnLaunch: true,
+        languageMode: .system
     )
+
+    init(
+        menuBarDisplayMode: MenuBarDisplayMode,
+        openControlWindowOnLaunch: Bool,
+        languageMode: AppLanguageMode = .system
+    ) {
+        self.menuBarDisplayMode = menuBarDisplayMode
+        self.openControlWindowOnLaunch = openControlWindowOnLaunch
+        self.languageMode = languageMode
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        menuBarDisplayMode = try container.decode(MenuBarDisplayMode.self, forKey: .menuBarDisplayMode)
+        openControlWindowOnLaunch = try container.decode(Bool.self, forKey: .openControlWindowOnLaunch)
+        languageMode = try container.decodeIfPresent(AppLanguageMode.self, forKey: .languageMode) ?? .system
+    }
 }
 
 final class AppSettingsStore {
