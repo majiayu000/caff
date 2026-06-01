@@ -205,10 +205,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applyLanguageMode(rebuildControlWindow: Bool) {
         text = AppText(language: settings.languageMode.resolvedLanguage())
+        refreshAgentActivityLanguageText()
         refreshStaticControlText()
 
-        let existingFrame = controlWindow?.frame
-        if rebuildControlWindow, existingFrame != nil {
+        let existingWindow = controlWindow
+        let existingFrame = existingWindow?.frame
+        let wasControlWindowVisible = existingWindow?.isVisible == true
+        if rebuildControlWindow, existingWindow != nil {
             controlWindow?.close()
             controlWindow = nil
             startButtons = []
@@ -217,7 +220,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
         updateStatusTitle()
 
-        if rebuildControlWindow, let existingFrame {
+        if rebuildControlWindow, let existingFrame, wasControlWindowVisible {
             let window = makeControlWindowIfNeeded()
             window.setFrame(existingFrame, display: true)
             window.makeKeyAndOrderFront(nil)
