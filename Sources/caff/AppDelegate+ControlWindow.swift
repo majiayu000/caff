@@ -45,6 +45,12 @@ extension AppDelegate {
             symbolName: "bolt.badge.clock.fill",
             views: automationViews()
         )
+        let settingsSection = sectionView(
+            title: text.settings,
+            subtitle: text.settingsSubtitle,
+            symbolName: "gearshape.fill",
+            views: [settingsRows()]
+        )
         let historySection = sectionView(
             title: text.history,
             subtitle: text.historySubtitle,
@@ -56,6 +62,7 @@ extension AppDelegate {
             currentSessionSection,
             keepAwakeSection,
             automationSection,
+            settingsSection,
             historySection
         ]
 
@@ -185,6 +192,9 @@ extension AppDelegate {
         batteryPolicyCheckbox.action = #selector(toggleBatteryPolicy)
         notificationsCheckbox.target = self
         notificationsCheckbox.action = #selector(toggleNotifications)
+        languagePopupButton.target = self
+        languagePopupButton.action = #selector(changeLanguageModeFromPopup)
+        languagePopupButton.controlSize = .small
         for checkbox in [
             displayAwakeCheckbox,
             batteryPolicyCheckbox,
@@ -217,6 +227,7 @@ extension AppDelegate {
         removeHooksButton.action = #selector(removeAgentHooks)
         CaffPanelStyle.styleRoundedButton(removeHooksButton)
         removeHooksButton.contentTintColor = CaffPanelStyle.bad
+        refreshStaticControlText()
     }
 
     private func updateHero() {
@@ -459,6 +470,21 @@ extension AppDelegate {
         return stack
     }
 
+    private func settingsRows() -> NSView {
+        let stack = NSStackView(views: [
+            settingsRow(
+                title: text.languageLabel,
+                subtitle: text.languageSubtitle,
+                trailing: languagePopupButton
+            )
+        ])
+        stack.orientation = .vertical
+        stack.alignment = .width
+        stack.spacing = 0
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        return stack
+    }
+
     private func agentActivityHookGroup() -> NSView {
         let icon = symbolTile(
             symbolName: "bolt.fill",
@@ -570,7 +596,7 @@ extension AppDelegate {
     private func settingsRow(
         title: String,
         subtitle: String,
-        control: NSView,
+        control: NSView? = nil,
         trailing: NSView? = nil
     ) -> NSView {
         let subtitleLabel = NSTextField(labelWithString: subtitle)

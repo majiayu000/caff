@@ -39,6 +39,7 @@ extension AppDelegate {
         notificationsItem.state = notificationsEnabled ? .on : .off
         menu.addItem(notificationsItem)
         menu.addItem(menuItem(text.choose(en: "Menu Bar Mode: \(text.menuBarModeLabel(settings.menuBarDisplayMode))", zh: "菜单栏模式：\(text.menuBarModeLabel(settings.menuBarDisplayMode))"), action: #selector(cycleMenuBarMode)))
+        menu.addItem(languageMenuItem())
         let launchWindowItem = menuItem(text.choose(en: "Show Window on Launch", zh: "启动时显示窗口"), action: #selector(toggleOpenWindowOnLaunch))
         launchWindowItem.state = settings.openControlWindowOnLaunch ? .on : .off
         menu.addItem(launchWindowItem)
@@ -74,6 +75,23 @@ extension AppDelegate {
     private func disabledMenuItem(_ title: String) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         item.isEnabled = false
+        return item
+    }
+
+    private func languageMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(
+            title: text.label(text.languageLabel, text.languageModeLabel(settings.languageMode)),
+            action: nil,
+            keyEquivalent: ""
+        )
+        let submenu = NSMenu()
+        for mode in AppLanguageMode.allCases {
+            let modeItem = menuItem(text.languageModeLabel(mode), action: #selector(changeLanguageModeFromMenu))
+            modeItem.representedObject = mode.rawValue
+            modeItem.state = mode == settings.languageMode ? .on : .off
+            submenu.addItem(modeItem)
+        }
+        item.submenu = submenu
         return item
     }
 

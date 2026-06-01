@@ -2,7 +2,7 @@ import AppKit
 import CaffCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    let text = AppText.current
+    var text = AppText.current
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let powerAssertions = PowerAssertionController()
     let windowStatusLabel = NSTextField(labelWithString: AppText.current.off)
@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let installHooksButton = NSButton(title: AppText.current.installHooks, target: nil, action: nil)
     let removeHooksButton = NSButton(title: AppText.current.removeHooks, target: nil, action: nil)
     let notificationsCheckbox = NSButton(checkboxWithTitle: AppText.current.enableNotifications, target: nil, action: nil)
+    let languagePopupButton = NSPopUpButton(frame: .zero, pullsDown: false)
     let historyStatusLabel = NSTextField(labelWithString: AppText.current.localizedStatus("History: Empty"))
     let stopButton = NSButton(title: AppText.current.stop, target: nil, action: nil)
     let clearHistoryButton = NSButton(title: AppText.current.clearHistory, target: nil, action: nil)
@@ -53,6 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         registerRemoteControlHandlers()
         settings = settingsStore.load()
+        applyLanguageMode(rebuildControlWindow: false)
         history = historyStore.load()
         statusItem.button?.title = "CAFF"
         rebuildMenu()
@@ -173,6 +175,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.openControlWindowOnLaunch.toggle()
         settingsStore.save(settings)
         rebuildMenu()
+    }
+
+    @objc func changeLanguageModeFromPopup(_ sender: NSPopUpButton) {
+        let modes = AppLanguageMode.allCases
+        let selectedIndex = sender.indexOfSelectedItem
+        guard modes.indices.contains(selectedIndex) else {
+            return
+        }
+        setLanguageMode(modes[selectedIndex])
+    }
+
+    @objc func changeLanguageModeFromMenu(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String,
+              let mode = AppLanguageMode(rawValue: rawValue) else {
+            return
+        }
+        setLanguageMode(mode)
+    }
+
+    func setLanguageMode(_ mode: AppLanguageMode) {
+        guard settings.languageMode != mode else {
+            return
+        }
+        settings.languageMode = mode
+        settingsStore.save(settings)
+        applyLanguageMode(rebuildControlWindow: true)
+    }
+
+    func applyLanguageMode(rebuildControlWindow: Bool) {
+        text = AppText(language: settings.languageMode.resolvedLanguage())
+        refreshStaticControlText()
+
+        let existingFrame = controlWindow?.frame
+        if rebuildControlWindow, existingFrame != nil {
+            controlWindow?.close()
+            controlWindow = nil
+            startButtons = []
+        }
+
+        rebuildMenu()
+        updateStatusTitle()
+
+        if rebuildControlWindow, let existingFrame {
+            let window = makeControlWindowIfNeeded()
+            window.setFrame(existingFrame, display: true)
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    func refreshStaticControlText() {
+        lidLimitLabel.stringValue = text.lidLimit
+        displayAwakeCheckbox.title = text.keepDisplayAwake
+        batteryPolicyCheckbox.title = text.allowBatteryLongSessions
+        notificationsCheckbox.title = text.enableNotifications
+        installHooksButton.title = text.installHooks
+        removeHooksButton.title = text.removeHooks
+        stopButton.title = text.stop
+        clearHistoryButton.title = text.clearHistory
+        refreshLanguagePopup()
+    }
+
+    func refreshLanguagePopup() {
+        languagePopupButton.removeAllItems()
+        for mode in AppLanguageMode.allCases {
+            languagePopupButton.addItem(withTitle: text.languageModeLabel(mode))
+        }
+        if let index = AppLanguageMode.allCases.firstIndex(of: settings.languageMode) {
+            languagePopupButton.selectItem(at: index)
+        }
     }
 
     @objc func quit() {
