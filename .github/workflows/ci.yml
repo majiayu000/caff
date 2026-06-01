@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  swift:
+    name: Swift
+    runs-on: macos-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check whitespace
+        run: git diff --check
+
+      - name: Build package
+        run: swift build
+
+      - name: Run tests
+        run: swift test
+
+      - name: Run core checks
+        run: swift run caff-core-checks
+
+      - name: Build app bundle
+        run: ./scripts/build_app.sh
