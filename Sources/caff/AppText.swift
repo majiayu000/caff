@@ -236,6 +236,13 @@ struct AppText {
         return result.replacingOccurrences(of: ": ", with: "：")
     }
 
+    func localizedReason(_ value: String) -> String {
+        if value == "Caff is keeping this Mac awake" {
+            return defaultReason
+        }
+        return localizedStatus(value)
+    }
+
     func triggeredMeta(for session: WakeSession) -> String {
         if language == .simplifiedChinese {
             return "\(session.compactStatus()) - 由\(sourceLabel(session.source))触发 - \(assertionSummary(session.assertionSummary))"

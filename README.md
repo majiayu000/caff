@@ -257,7 +257,21 @@ swift test
 swift build
 swift run caff-core-checks
 ./scripts/build_app.sh
+./scripts/render_report.sh      # run tests and write docs/reports/<date>/report.md
+bash scripts/check_drift.sh     # flag undocumented public symbols
 ```
+
+## Local git hooks
+
+The repo ships a `pre-commit` hook that blocks commits which introduce
+public symbols in `Sources/CaffCore/` without updating
+`docs/knowledge/L1_modules.md`. Enable it once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Bypass a single commit with `git commit --no-verify`.
 
 ## Release Notes
 

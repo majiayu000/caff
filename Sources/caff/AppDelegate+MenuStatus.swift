@@ -13,7 +13,7 @@ extension AppDelegate {
         if let activeSession {
             menu.addItem(disabledMenuItem(text.label(text.localizedStatus("Running"), "\(text.sourceLabel(activeSession.source)) - \(text.durationLabel(activeSession.duration))")))
             menu.addItem(disabledMenuItem(text.label(text.localizedStatus("Assertions"), text.assertionSummary(activeSession.assertionSummary))))
-            menu.addItem(disabledMenuItem(text.label(text.localizedStatus("Reason"), activeSession.reason)))
+            menu.addItem(disabledMenuItem(text.label(text.localizedStatus("Reason"), text.localizedReason(activeSession.reason))))
             menu.addItem(disabledMenuItem(text.label(text.localizedStatus("Safety"), text.localizedSafetyNotes(safetyNotes(for: activeSession)))))
             menu.addItem(menuItem(text.stop, action: #selector(stopSessionFromMenu)))
         } else {

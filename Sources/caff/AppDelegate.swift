@@ -45,7 +45,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var agentActivityTimer: Timer?
     var agentActivityState: AgentActivityState?
     var lastAgentTouch: AgentActivityTouch?
-    var agentActivitySummary = AppText.current.localizedStatus("Agent activity idle")
+    var agentActivitySummary = "Agent activity idle"
+    var hookManagementStatus = HookManagementDisplayStatus.notInstalled
     var keepDisplayAwake = false
     var allowLongSessionsOnBattery = false
     var notificationsEnabled = false
@@ -234,6 +235,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notificationsCheckbox.title = text.enableNotifications
         installHooksButton.title = text.installHooks
         removeHooksButton.title = text.removeHooks
+        hookManagementStatusLabel.stringValue = hookManagementStatus.localizedText(text)
         stopButton.title = text.stop
         clearHistoryButton.title = text.clearHistory
         refreshLanguagePopup()
@@ -281,7 +283,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         source: SessionSource = .manual,
         reason: String? = nil
     ) -> Bool {
-        let sessionReason = reason ?? text.defaultReason
+        let sessionReason = reason ?? "Caff is keeping this Mac awake"
         let startedAt = Date()
         let powerSource = PowerSourceMonitor.current()
         let safetyPolicy = currentSafetyPolicy()
@@ -298,7 +300,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             lastErrorMessage = nil
             scheduleTimer()
-            sendNotification(title: text.caffStarted, body: sessionOptions.reason)
+            sendNotification(title: text.caffStarted, body: text.localizedReason(sessionOptions.reason))
             rebuildMenu()
             updateStatusTitle()
             return true
@@ -321,7 +323,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     result: result,
                     errorMessage: errorMessage
                 )
-                sendNotification(title: text.caffStopped, body: sessionToRecord.reason)
+                sendNotification(title: text.caffStopped, body: text.localizedReason(sessionToRecord.reason))
             }
             clearSessionState()
             lastErrorMessage = nil
