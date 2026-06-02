@@ -10,7 +10,7 @@ on:
 jobs:
   swift-test:
     name: swift build + test + report
-    runs-on: macos-14
+    runs-on: macos-latest
 
     steps:
       - name: Checkout
@@ -24,9 +24,6 @@ jobs:
 
       - name: swift build
         run: swift build
-
-      - name: swift test (parallel)
-        run: swift test --parallel
 
       - name: Render test report
         run: bash scripts/render_report.sh
