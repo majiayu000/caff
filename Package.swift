@@ -34,6 +34,10 @@ let package = Package(
         .testTarget(
             name: "CaffCoreTests",
             dependencies: ["CaffCore"]
+        ),
+        .testTarget(
+            name: "CaffAppTests",
+            dependencies: ["caff"]
         )
     ]
 )

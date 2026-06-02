@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# .githooks/pre-commit — block commits that introduce undocumented public
+# symbols in Sources/CaffCore.
+#
+# Enable with:
+#   git config core.hooksPath .githooks
+#
+# Skip with:
+#   git commit --no-verify
+#
+# Re-runs scripts/check_drift.sh --changed against the staged CaffCore files
+# only, so unrelated commits (e.g. docs/ changes) are not affected.
+
+set -e
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+DRIFT_SCRIPT="$REPO_ROOT/scripts/check_drift.sh"
+
+if [[ ! -x "$DRIFT_SCRIPT" ]]; then
+    echo "pre-commit: $DRIFT_SCRIPT is missing or not executable; skipping" >&2
+    exit 0
+fi
+
+# Only run if the commit touches CaffCore sources.
+STAGED_SOURCES=$(git diff --cached --name-only -- 'Sources/CaffCore/*.swift' || true)
+if [[ -z "$STAGED_SOURCES" ]]; then
+    exit 0
+fi
+
+echo "pre-commit: running scripts/check_drift.sh --changed on staged CaffCore files"
+if bash "$DRIFT_SCRIPT" --changed; then
+    exit 0
+fi
+
+cat >&2 <<'MSG'
+
+pre-commit: drift detected. The commit introduces public symbol(s) in
+Sources/CaffCore/ that are not documented in docs/knowledge/L1_modules.md.
+
+Options:
+  1. Update docs/knowledge/L1_modules.md to document the new symbol(s).
+  2. Bypass with:  git commit --no-verify   (use sparingly)
+
+MSG
+exit 1

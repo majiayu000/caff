@@ -121,7 +121,7 @@ extension AppDelegate {
             windowStatusLabel.textColor = CaffPanelStyle.good
             sourceProofLabel.stringValue = text.label(text.localizedStatus("Source"), text.sourceLabel(activeSession.source))
             assertionProofLabel.stringValue = text.label(text.localizedStatus("Assertions"), text.assertionSummary(activeSession.assertionSummary))
-            reasonProofLabel.stringValue = text.label(text.localizedStatus("Reason"), activeSession.reason)
+            reasonProofLabel.stringValue = text.label(text.localizedStatus("Reason"), text.localizedReason(activeSession.reason))
             startedProofLabel.stringValue = text.label(text.localizedStatus("Started"), formatDate(activeSession.startedAt))
             errorProofLabel.stringValue = activeSession.errorMessage.map { text.label(text.localizedStatus("Error"), $0) } ?? ""
             policyStatusLabel.stringValue = text.label(text.localizedStatus("Safety"), text.localizedSafetyNotes(safetyNotes(for: activeSession)))
@@ -147,6 +147,7 @@ extension AppDelegate {
         agentLastTouchLabel.stringValue = lastAgentTouch.map {
             text.choose(en: "Last touch: \($0.source) at \(formatDate($0.receivedAt))", zh: "最近触发：\($0.source)，\(formatDate($0.receivedAt))")
         } ?? text.localizedStatus("Last touch: None")
+        hookManagementStatusLabel.stringValue = hookManagementStatus.localizedText(text)
         notificationsCheckbox.state = notificationsEnabled ? .on : .off
         historyStatusLabel.stringValue = historyMenuSummary()
         clearHistoryButton.isEnabled = !history.isEmpty

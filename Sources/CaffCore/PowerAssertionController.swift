@@ -52,12 +52,15 @@ public enum PowerAssertionError: Error, CustomStringConvertible, Equatable {
 
 public final class PowerAssertionController {
     private var assertionIDs: [PowerAssertionKind: IOPMAssertionID] = [:]
+    private let backend: IOPowerAssertionBackend
 
-    public init() {}
+    public init(backend: IOPowerAssertionBackend = SystemIOPowerAssertionBackend()) {
+        self.backend = backend
+    }
 
     deinit {
         for (kind, assertionID) in assertionIDs {
-            let result = IOPMAssertionRelease(assertionID)
+            let result = backend.releaseAssertion(assertionID)
             if result != kIOReturnSuccess {
                 Self.writeError("Caff failed to release \(kind.rawValue) assertion during cleanup: IOReturn \(result)")
             }
@@ -100,7 +103,7 @@ public final class PowerAssertionController {
         var retainedAssertions: [PowerAssertionKind: IOPMAssertionID] = [:]
 
         for (kind, assertionID) in assertionIDs {
-            let result = IOPMAssertionRelease(assertionID)
+            let result = backend.releaseAssertion(assertionID)
             if result != kIOReturnSuccess, firstError == nil {
                 firstError = .releaseFailed(kind: kind, code: result)
             }
@@ -117,19 +120,17 @@ public final class PowerAssertionController {
     }
 
     private func createAssertion(_ kind: PowerAssertionKind, reason: String) throws {
-        var assertionID = IOPMAssertionID(0)
-        let result = IOPMAssertionCreateWithName(
-            kind.assertionType,
-            IOPMAssertionLevel(kIOPMAssertionLevelOn),
-            reason as CFString,
-            &assertionID
+        let result = backend.createAssertion(
+            type: kind.assertionType,
+            level: IOPMAssertionLevel(kIOPMAssertionLevelOn),
+            reason: reason as CFString
         )
 
-        guard result == kIOReturnSuccess else {
-            throw PowerAssertionError.createFailed(kind: kind, code: result)
+        guard result.status == kIOReturnSuccess else {
+            throw PowerAssertionError.createFailed(kind: kind, code: result.status)
         }
 
-        assertionIDs[kind] = assertionID
+        assertionIDs[kind] = result.id
     }
 
     private static func writeError(_ message: String) {

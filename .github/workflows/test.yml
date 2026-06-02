@@ -1,0 +1,44 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  swift-test:
+    name: swift build + test + report
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcode-select -p
+          swift --version
+
+      - name: swift build
+        run: swift build
+
+      - name: swift test (parallel)
+        run: swift test --parallel
+
+      - name: Render test report
+        run: bash scripts/render_report.sh
+
+      - name: Check L1 drift
+        run: bash scripts/check_drift.sh
+
+      - name: Upload test report artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: caff-test-report
+          path: docs/reports/
+          retention-days: 14
+          if-no-files-found: warn
