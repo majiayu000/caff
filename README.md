@@ -2,7 +2,38 @@
 
 Caff is a small macOS menu bar app that keeps the machine awake while long-running agent tasks are active. It can be driven manually, by agent hook events, or by CLI/URL commands.
 
+[Install](#install) · [Quick Start](#quick-start) · [Why Caff?](#why-caff) · [Star on GitHub](https://github.com/majiayu000/caff)
+
+```bash
+brew install --cask majiayu000/caff/caff
+```
+
 ![Caff control window](media/caff-control-window.png)
+
+## Why Caff?
+
+Long-running agent work usually fails in unglamorous ways: a Mac sleeps, the network drops, or an interactive Codex/Claude turn stops mid-task.
+
+Caff is for the gap between "keep the whole machine awake forever" and "hope macOS stays awake long enough":
+
+- keep the Mac awake while complex agent or long-context tasks are running
+- avoid leaving a raw `caffeinate` command open in a terminal
+- use visible manual timers, safety limits, and optional display-awake control
+- refresh wake locks from explicit `agent-touch` hook events instead of guessing from process names
+
+## Screenshots
+
+| Menu bar control | Control window |
+| --- | --- |
+| <img src="media/caff-menu-status.png" alt="Caff menu bar status and controls" width="360"> | <img src="media/caff-control-window.png" alt="Caff control window" width="360"> |
+| Hook management | Settings and history |
+| <img src="media/caff-hook-management.png" alt="Caff agent activity hook management" width="360"> | <img src="media/caff-settings-history.png" alt="Caff settings and history controls" width="360"> |
+
+## Quick Demo
+
+Manual start plus `agent-touch` refresh:
+
+![Caff manual start and agent-touch refresh demo](media/caff-agent-touch-demo.gif)
 
 It uses the official IOKit power assertion API:
 
