@@ -2,7 +2,7 @@
 
 All notable changes to Caff are documented here.
 
-## Unreleased
+## 0.1.4 - 2026-06-03
 
 - Added launch-readiness repository metadata, templates, CI, license, and visual proof.
 - Added `IOPowerAssertionBackend` protocol and `SystemIOPowerAssertionBackend` so `PowerAssertionController` can be exercised under a fake backend in tests. Existing call sites are source-compatible because the new `init` parameter has a default value.
