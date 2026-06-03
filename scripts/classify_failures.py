@@ -82,14 +82,23 @@ FALLBACK_CLASS = "UNKNOWN"
 
 
 def extract_failing_names(log_text: str) -> list[str]:
-    """Pull failing test names out of a swift test log.
+    """Pull failing test names out of a swift test log, deduplicated.
 
     Recognised lines:
         ✘ Test foo() failed after 0.001 seconds with 1 issue.
         ✘ Test bar() recorded an issue at Path.swift:10:5: ...
+
+    Swift Testing may emit two ✘ lines per failing test (one for the
+    recorded issue, one for the failure summary). We dedupe while keeping
+    the first-seen order so callers see one entry per failing test.
     """
     rx = re.compile(r"^✘\s+Test\s+([^(]+?)\s*\(", re.MULTILINE)
-    return [m.group(1).strip() for m in rx.finditer(log_text)]
+    seen: dict[str, None] = {}
+    for m in rx.finditer(log_text):
+        name = m.group(1).strip()
+        if name not in seen:
+            seen[name] = None
+    return list(seen.keys())
 
 
 def classify(name: str) -> str:
@@ -165,6 +174,34 @@ class TestClassifier(unittest.TestCase):
         self.assertEqual(
             extract_failing_names(log),
             ["foo", "bar"],
+        )
+
+    def test_extracts_names_dedupes_duplicate_failure_lines(self) -> None:
+        # swift test may print two ✘ lines per failing test:
+        #   ✘ Test foo() recorded an issue at ...
+        #   ✘ Test foo() failed after ... with 1 issue.
+        # We want exactly one entry per failing test, first-seen wins.
+        log = """
+✘ Test foo() recorded an issue at Path.swift:1:1: ...
+✘ Test foo() failed after 0.001 seconds with 1 issue.
+✘ Test bar() recorded an issue at Path.swift:2:2: ...
+✘ Test bar() failed after 0.001 seconds with 1 issue.
+"""
+        self.assertEqual(
+            extract_failing_names(log),
+            ["foo", "bar"],
+        )
+
+    def test_extracts_names_preserves_order_across_duplicates(self) -> None:
+        log = """
+✘ Test z() recorded an issue at ...
+✘ Test a() failed after ... with 1 issue.
+✘ Test z() failed after ... with 1 issue.
+"""
+        # First-seen order: z, a (z's duplicate is dropped).
+        self.assertEqual(
+            extract_failing_names(log),
+            ["z", "a"],
         )
 
     def test_classify_expected_failure_rejects(self) -> None:
