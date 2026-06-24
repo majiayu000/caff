@@ -1,5 +1,10 @@
 # Caff
 
+[![CI](https://github.com/majiayu000/caff/actions/workflows/ci.yml/badge.svg)](https://github.com/majiayu000/caff/actions/workflows/ci.yml)
+[![test](https://github.com/majiayu000/caff/actions/workflows/test.yml/badge.svg)](https://github.com/majiayu000/caff/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/majiayu000/caff)](https://github.com/majiayu000/caff/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Caff is a small macOS menu bar app that keeps the machine awake while long-running agent tasks are active. It can be driven manually, by agent hook events, or by CLI/URL commands.
 
 [Install](#install) · [Quick Start](#quick-start) · [Why Caff?](#why-caff) · [Star on GitHub](https://github.com/majiayu000/caff)

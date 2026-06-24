@@ -2,6 +2,11 @@
 
 All notable changes to Caff are documented here.
 
+## Unreleased
+
+- Added README status badges for CI, tests, release, and license.
+- Updated GitHub Actions workflows to current runner and action versions.
+
 ## 0.1.4 - 2026-06-03
 
 - Added launch-readiness repository metadata, templates, CI, license, and visual proof.
