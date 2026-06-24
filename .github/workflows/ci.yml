@@ -9,10 +9,10 @@ on:
 jobs:
   swift:
     name: Swift
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Check whitespace
         run: git diff --check

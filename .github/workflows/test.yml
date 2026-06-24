@@ -10,11 +10,11 @@ on:
 jobs:
   swift-test:
     name: swift build + test + report
-    runs-on: macos-latest
+    runs-on: macos-15
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Show toolchain
         run: |
@@ -33,7 +33,7 @@ jobs:
 
       - name: Upload test report artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: caff-test-report
           path: docs/reports/
