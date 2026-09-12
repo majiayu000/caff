@@ -185,6 +185,50 @@ do {
     failures.append("remote control duration rejected with unexpected error: \(error)")
 }
 
+do {
+    let maxMinutes = SafetyPolicy.standard.maximumSessionMinutes
+    let atMax = try RemoteControlParser.duration(minutes: "\(maxMinutes)")
+    check(atMax.minutes == maxMinutes, "remote control should accept the maximum session minutes")
+} catch {
+    failures.append("remote control maximum duration parsing failed: \(error)")
+}
+
+do {
+    let overMax = "\(SafetyPolicy.standard.maximumSessionMinutes + 1)"
+    _ = try RemoteControlParser.duration(minutes: overMax)
+    failures.append("remote control should reject durations above maximum session minutes")
+} catch let error as RemoteControlError {
+    check(
+        error == .invalidDuration("\(SafetyPolicy.standard.maximumSessionMinutes + 1)"),
+        "remote control should report oversized duration value"
+    )
+} catch {
+    failures.append("remote control oversized duration rejected with unexpected error: \(error)")
+}
+
+do {
+    _ = try RemoteControlParser.duration(minutes: "\(Int.max)")
+    failures.append("remote control should reject Int.max-scale durations")
+} catch let error as RemoteControlError {
+    check(error == .invalidDuration("\(Int.max)"), "remote control should report Int.max-scale duration value")
+} catch {
+    failures.append("remote control Int.max duration rejected with unexpected error: \(error)")
+}
+
+let overflowingDuration = SessionDuration(label: "Overflow", minutes: Int.max)
+check(overflowingDuration.timeInterval == nil, "session duration timeInterval should return nil on overflow")
+check(overflowingDuration.endDate(from: startDate) == nil, "session duration endDate should return nil on overflow")
+
+let maxSafeMinutes = Int.max / 60
+let safeDuration = SessionDuration(label: "Safe Max", minutes: maxSafeMinutes)
+check(
+    safeDuration.timeInterval == TimeInterval(maxSafeMinutes * 60),
+    "session duration timeInterval should accept the largest non-overflowing minutes"
+)
+let unsafeDuration = SessionDuration(label: "Unsafe", minutes: maxSafeMinutes + 1)
+check(unsafeDuration.timeInterval == nil, "session duration timeInterval should reject overflowing minutes")
+
+
 for removedSource in ["process", "workspace"] {
     do {
         _ = try RemoteControlParser.source(removedSource)

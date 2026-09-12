@@ -21,6 +21,21 @@ private let startDate = Date(timeIntervalSince1970: 1_000)
     #expect(custom.timeInterval == TimeInterval(45 * 60))
 }
 
+@Test func sessionDurationTimeIntervalReturnsNilOnOverflow() {
+    let overflowing = SessionDuration(label: "Overflow", minutes: Int.max)
+    #expect(overflowing.timeInterval == nil)
+    #expect(overflowing.endDate(from: startDate) == nil)
+}
+
+@Test func sessionDurationTimeIntervalHandlesNearOverflowBoundary() {
+    let maxSafeMinutes = Int.max / 60
+    let safe = SessionDuration(label: "Safe Max", minutes: maxSafeMinutes)
+    #expect(safe.timeInterval == TimeInterval(maxSafeMinutes * 60))
+
+    let unsafe = SessionDuration(label: "Unsafe", minutes: maxSafeMinutes + 1)
+    #expect(unsafe.timeInterval == nil)
+}
+
 @Test func sessionDurationPresetThirtyMinutesEndDate() {
     #expect(SessionDuration.thirtyMinutes.endDate(from: startDate) == startDate.addingTimeInterval(30 * 60))
 }
