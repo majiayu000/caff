@@ -269,6 +269,32 @@ check(
 )
 
 do {
+    let authDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("caff-core-checks-auth-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: authDirectory) }
+    let auth = RemoteCommandAuth(directoryURL: authDirectory)
+    let token = try auth.loadOrCreateToken()
+    try auth.verify(token)
+    check(auth.isValid(token), "matching remote token should verify")
+    check(!auth.isValid(nil), "missing remote token should fail")
+    check(!auth.isValid("wrong-token"), "wrong remote token should fail")
+    do {
+        try auth.verify(nil)
+        failures.append("remote auth should reject missing token")
+    } catch let error as RemoteCommandAuthError {
+        check(error == .missingToken, "remote auth should report missing token")
+    }
+    do {
+        try auth.verify("wrong-token")
+        failures.append("remote auth should reject wrong token")
+    } catch let error as RemoteCommandAuthError {
+        check(error == .invalidToken, "remote auth should report invalid token")
+    }
+} catch {
+    failures.append("remote command auth checks failed: \(error)")
+}
+
+do {
     let controller = PowerAssertionController()
     try controller.start(options: SessionOptions(duration: .thirtyMinutes, keepDisplayAwake: true))
     check(controller.isRunning, "controller should report running after start")

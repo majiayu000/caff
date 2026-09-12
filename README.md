@@ -153,9 +153,11 @@ Caff persists menu bar density and launch behavior. The menu bar can show icon-o
 
 The same executable accepts `start`, `stop`, `status`, `agent-touch`, `install-hooks`, and `remove-hooks` commands. `start` supports `--minutes`, `--reason`, `--display-awake`, and `--source`; `status` prints the latest Caff app snapshot, including source, requested assertions, reason, timestamps, display-awake state, agent cooldown state, the last received agent-touch event, and errors. The app bundle registers URL commands for equivalent control:
 
-- `caff://start?minutes=30&reason=agent`
-- `caff://stop`
-- `caff://agent-touch?source=codex&cooldownSeconds=1800`
+- `caff://start?minutes=30&reason=agent&token=<install-token>`
+- `caff://stop?token=<install-token>`
+- `caff://agent-touch?source=codex&cooldownSeconds=1800&token=<install-token>`
+
+Remote control over DistributedNotificationCenter and `caff://` URLs requires a per-install shared secret stored at `~/Library/Application Support/Caff/remote-command.token`. The CLI and installed `agent-touch` hooks attach that token automatically. URL callers must include a matching `token` query parameter; missing or wrong tokens are rejected before start/stop/agent-touch runs.
 
 For long-running interactive agent CLIs, `agent-touch` refreshes a last-activity cooldown without relying on the `codex` or `claude` process exiting:
 

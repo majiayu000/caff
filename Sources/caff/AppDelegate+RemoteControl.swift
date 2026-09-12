@@ -40,6 +40,9 @@ extension AppDelegate {
         withRemoteErrorPresentation {
             do {
                 try applyRemoteCommand(userInfo: userInfo)
+            } catch is RemoteCommandAuthError {
+                // Reject forged/missing-token IPC without modal spam.
+                fputs("Caff rejected unauthenticated remote command notification\n", stderr)
             } catch {
                 showError(error)
             }
@@ -59,6 +62,8 @@ extension AppDelegate {
                     userInfo[RemoteCommandBridge.Key.source] = SessionSource.url.rawValue
                 }
                 try applyRemoteCommand(userInfo: userInfo)
+            } catch is RemoteCommandAuthError {
+                fputs("Caff rejected unauthenticated caff:// remote command\n", stderr)
             } catch {
                 showError(error)
             }
@@ -66,6 +71,7 @@ extension AppDelegate {
     }
 
     private func applyRemoteCommand(userInfo: [String: String]) throws {
+        try RemoteCommandAuth().verify(userInfo[RemoteCommandBridge.Key.token])
         let action = userInfo[RemoteCommandBridge.Key.action] ?? ""
         switch action {
         case "start":
