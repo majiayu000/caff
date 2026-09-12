@@ -249,6 +249,25 @@ do {
     failures.append("remote control cooldown rejected with unexpected error: \(error)")
 }
 
+var remotePresentation = RemoteErrorPresentation(minimumInterval: 5)
+let remoteStart = Date(timeIntervalSince1970: 5_000)
+check(
+    RemoteErrorPresentation.defaultMinimumInterval == 5,
+    "remote error presentation should default to a 5 second notification interval"
+)
+check(
+    remotePresentation.shouldEmitNotification(now: remoteStart),
+    "first remote error notification should be allowed"
+)
+check(
+    remotePresentation.shouldEmitNotification(now: remoteStart.addingTimeInterval(1)) == false,
+    "remote error notifications should be rate-limited inside the interval"
+)
+check(
+    remotePresentation.shouldEmitNotification(now: remoteStart.addingTimeInterval(5)),
+    "remote error notifications should resume after the minimum interval"
+)
+
 do {
     let controller = PowerAssertionController()
     try controller.start(options: SessionOptions(duration: .thirtyMinutes, keepDisplayAwake: true))

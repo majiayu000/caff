@@ -4,6 +4,7 @@ All notable changes to Caff are documented here.
 
 ## Unreleased
 
+- Remote DNC / `caff://` failures no longer call `NSAlert.runModal`; they update status, log to stderr, and emit rate-limited UserNotifications (`RemoteErrorPresentation`). Interactive menu and control-window errors still use modal alerts.
 - Fixed `SafetyPolicy` / `PowerSourceMonitor` to fail closed on empty or unknown power source: long and indefinite sessions now require confirmed AC when `allowLongSessionsOnBattery` is false.
 - Added README status badges for CI, tests, release, and license.
 - Updated GitHub Actions workflows to current runner and action versions.

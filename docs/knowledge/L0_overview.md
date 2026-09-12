@@ -28,6 +28,7 @@ Caff 是一款 macOS 菜单栏小工具,职责单一:**让 Mac 在跑长任务�
 | `AgentHookManager` | 安装/移除 Codex/Claude 的 hook | 幂等;不破坏已有非 Caff 配置 |
 | `AgentActivityCooldown` | agent-touch 冷却窗口 | 默认 1800s;空 source → "agent" |
 | `RemoteControlParser` | 解析 CLI/URL 入参 | 严格模式(负数/未知值抛错) |
+| `RemoteErrorPresentation` | 远程失败通知限流 | 默认 5s;间隔内不重复发通知 |
 
 ## 失败分类(借鉴 aitest-kit 思想)
 

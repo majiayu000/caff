@@ -242,3 +242,29 @@
 | "YES" | — | — | — | true |
 | "1" | — | — | — | true |
 | "garbage" | — | — | — | false |
+
+---
+
+## 10. `RemoteErrorPresentation`
+
+**公开 API**:
+- `static let defaultMinimumInterval: TimeInterval` (= 5)
+- `var lastNotificationAt: Date?`
+- `let minimumInterval: TimeInterval`
+- `init(minimumInterval:lastNotificationAt:)`
+- `mutating func shouldEmitNotification(now:) -> Bool`
+
+**不变量**:
+- 首次调用 `shouldEmitNotification` 恒为 `true`，并记录 `lastNotificationAt`
+- 距上次通知不足 `minimumInterval` 时返回 `false`，且不推进时间戳
+- 达到或超过 `minimumInterval` 后再次返回 `true`，并更新 `lastNotificationAt`
+- 默认间隔 5 秒；用于远程 DNC/`caff://` 失败路径，避免 UserNotification 洪水
+
+**等价类**:
+| now 相对 last | 返回 | last 是否更新 |
+|---|---|---|
+| 首次 (last=nil) | true | 是 |
+| +1s (< interval) | false | 否 |
+| +4.999s | false | 否 |
+| +5s (== interval) | true | 是 |
+| +10s | true | 是 |
