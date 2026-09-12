@@ -179,3 +179,20 @@ private func temporaryAuthDirectory() throws -> URL {
     #expect(token.count == RemoteCommandAuth.tokenByteCount * 2)
     #expect(try String(contentsOf: auth.tokenFileURL, encoding: .utf8) == token)
 }
+
+@Test func remoteCommandAuthDoesNotDeletePublishedTokenDuringEmptyRecovery() throws {
+    let directory = try temporaryAuthDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let auth = RemoteCommandAuth(directoryURL: directory)
+    // Leave an empty placeholder, then atomically replace it with a published token
+    // the way a concurrent winner would (unlink empty + link/write complete).
+    try Data().write(to: auth.tokenFileURL)
+    let published = String(repeating: "a", count: RemoteCommandAuth.tokenByteCount * 2)
+    try FileManager.default.removeItem(at: auth.tokenFileURL)
+    try published.data(using: .utf8)!.write(to: auth.tokenFileURL, options: .atomic)
+
+    let loaded = try auth.loadOrCreateToken()
+    #expect(loaded == published)
+    #expect(try String(contentsOf: auth.tokenFileURL, encoding: .utf8) == published)
+}

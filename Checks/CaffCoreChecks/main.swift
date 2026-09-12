@@ -320,6 +320,18 @@ do {
     try Data().write(to: emptyAuth.tokenFileURL)
     let recovered = try emptyAuth.loadOrCreateToken()
     check(recovered.count == RemoteCommandAuth.tokenByteCount * 2, "empty token file should be recovered")
+
+    let preserveDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("caff-core-checks-auth-preserve-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: preserveDirectory) }
+    try FileManager.default.createDirectory(at: preserveDirectory, withIntermediateDirectories: true)
+    let preserveAuth = RemoteCommandAuth(directoryURL: preserveDirectory)
+    try Data().write(to: preserveAuth.tokenFileURL)
+    let published = String(repeating: "b", count: RemoteCommandAuth.tokenByteCount * 2)
+    try FileManager.default.removeItem(at: preserveAuth.tokenFileURL)
+    try published.data(using: .utf8)!.write(to: preserveAuth.tokenFileURL, options: .atomic)
+    let preserved = try preserveAuth.loadOrCreateToken()
+    check(preserved == published, "recovery must not delete a concurrently published complete token")
 } catch {
     failures.append("remote command auth checks failed: \(error)")
 }

@@ -81,7 +81,12 @@ public struct RemoteCommandAuth: Sendable {
             return existing
         }
         // Recover empty/incomplete token paths left by a crashed exclusive create.
+        // Removal is conditional on the empty inode still being present so a
+        // concurrently published complete token is never deleted (TOCTOU).
         try removeIncompleteTokenIfPresent()
+        if let existing = try readTokenIfPresent() {
+            return existing
+        }
         let token = try Self.generateToken()
         do {
             try persistExclusively(token)
@@ -186,16 +191,45 @@ public struct RemoteCommandAuth: Sendable {
         }
     }
 
+    /// Removes a leftover empty token path from a crashed create.
+    ///
+    /// Only unlinks when the directory entry still names the same empty inode we
+    /// opened. If another process published a complete token via `link` (new inode)
+    /// between our initial miss and recovery, we leave their winner intact.
     private func removeIncompleteTokenIfPresent() throws {
-        guard FileManager.default.fileExists(atPath: tokenFileURL.path) else {
+        let path = tokenFileURL.path
+        let fd = open(path, O_RDONLY)
+        if fd < 0 {
+            // Missing or unreadable — create/reread paths handle the outcome.
             return
         }
-        // Caller already observed a missing/empty token; drop the incomplete path.
-        do {
-            try FileManager.default.removeItem(at: tokenFileURL)
-        } catch {
-            // Another writer may have replaced it; the reread path handles that.
+        defer { close(fd) }
+
+        var opened = stat()
+        guard fstat(fd, &opened) == 0 else {
+            return
         }
+
+        let byteCount = max(Int(opened.st_size), 0)
+        var buffer = [UInt8](repeating: 0, count: max(byteCount, 1))
+        let readCount = byteCount == 0 ? 0 : read(fd, &buffer, byteCount)
+        let data = readCount > 0 ? Data(buffer.prefix(readCount)) : Data()
+        let token = String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard token.isEmpty else {
+            // A complete token is present — never delete it.
+            return
+        }
+
+        var current = stat()
+        guard lstat(path, &current) == 0 else {
+            return
+        }
+        // Path now points at a different inode ⇒ concurrent publish won.
+        guard current.st_ino == opened.st_ino, current.st_dev == opened.st_dev else {
+            return
+        }
+        _ = unlink(path)
     }
 
     /// Writes the token to a private temp file, syncs it, then atomically publishes via `link`.
