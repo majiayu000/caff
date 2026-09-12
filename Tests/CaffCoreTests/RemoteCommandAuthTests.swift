@@ -152,3 +152,30 @@ private func temporaryAuthDirectory() throws -> URL {
     #expect(first != nil)
     #expect(first == second)
 }
+
+@Test func remoteCommandAuthRejectsReplayedNonce() throws {
+    let directory = try temporaryAuthDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let fixedNow = Date(timeIntervalSince1970: 1_700_000_100)
+    let auth = RemoteCommandAuth(directoryURL: directory, now: { fixedNow })
+    let signed = try auth.sign(["action": "stop"])
+
+    try auth.verifySignedPayload(signed)
+    let replayed = #expect(throws: RemoteCommandAuthError.self) {
+        try auth.verifySignedPayload(signed)
+    }
+    #expect(replayed == .invalidToken)
+}
+
+@Test func remoteCommandAuthRecoversEmptyTokenFile() throws {
+    let directory = try temporaryAuthDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let auth = RemoteCommandAuth(directoryURL: directory)
+    try Data().write(to: auth.tokenFileURL)
+
+    let token = try auth.loadOrCreateToken()
+    #expect(token.count == RemoteCommandAuth.tokenByteCount * 2)
+    #expect(try String(contentsOf: auth.tokenFileURL, encoding: .utf8) == token)
+}

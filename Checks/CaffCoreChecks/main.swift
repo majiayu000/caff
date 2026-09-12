@@ -297,6 +297,12 @@ do {
     check(signed[RemoteCommandAuth.PayloadKey.token] == nil, "signed payload must omit reusable token")
     check(signed[RemoteCommandAuth.PayloadKey.mac]?.isEmpty == false, "signed payload must include mac")
     try auth.authenticate(signed)
+    do {
+        try auth.verifySignedPayload(signed)
+        failures.append("remote auth should reject replayed nonce")
+    } catch let error as RemoteCommandAuthError {
+        check(error == .invalidToken, "remote auth should report replayed nonce")
+    }
     var tampered = signed
     tampered["action"] = "start"
     do {
@@ -305,6 +311,15 @@ do {
     } catch let error as RemoteCommandAuthError {
         check(error == .invalidToken, "remote auth should report invalid mac")
     }
+
+    let emptyTokenDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("caff-core-checks-auth-empty-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: emptyTokenDirectory) }
+    try FileManager.default.createDirectory(at: emptyTokenDirectory, withIntermediateDirectories: true)
+    let emptyAuth = RemoteCommandAuth(directoryURL: emptyTokenDirectory)
+    try Data().write(to: emptyAuth.tokenFileURL)
+    let recovered = try emptyAuth.loadOrCreateToken()
+    check(recovered.count == RemoteCommandAuth.tokenByteCount * 2, "empty token file should be recovered")
 } catch {
     failures.append("remote command auth checks failed: \(error)")
 }

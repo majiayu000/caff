@@ -20,6 +20,24 @@ public enum RemoteCommandAuthError: Error, CustomStringConvertible, Equatable, S
     }
 }
 
+/// Process-wide cache of accepted signed-payload nonces until their timestamps expire.
+private final class AcceptedNonceCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var expiresAtByNonce: [String: TimeInterval] = [:]
+
+    /// Returns `true` when `nonce` is newly recorded; `false` when it was already consumed.
+    func consume(_ nonce: String, expiresAt: TimeInterval, now: TimeInterval) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        expiresAtByNonce = expiresAtByNonce.filter { $0.value > now }
+        if expiresAtByNonce[nonce] != nil {
+            return false
+        }
+        expiresAtByNonce[nonce] = expiresAt
+        return true
+    }
+}
+
 /// Per-install shared secret for authenticating local remote-control commands.
 ///
 /// The token lives under Application Support/Caff. CLI/DNC callers never broadcast
@@ -36,6 +54,8 @@ public struct RemoteCommandAuth: Sendable {
         public static let nonce = "nonce"
         public static let timestamp = "ts"
     }
+
+    private static let acceptedNonces = AcceptedNonceCache()
 
     private let directoryURL: URL
     private let now: @Sendable () -> Date
@@ -60,6 +80,8 @@ public struct RemoteCommandAuth: Sendable {
         if let existing = try readTokenIfPresent() {
             return existing
         }
+        // Recover empty/incomplete token paths left by a crashed exclusive create.
+        try removeIncompleteTokenIfPresent()
         let token = try Self.generateToken()
         do {
             try persistExclusively(token)
@@ -121,11 +143,13 @@ public struct RemoteCommandAuth: Sendable {
         guard
             let tsRaw = userInfo[PayloadKey.timestamp],
             let timestamp = TimeInterval(tsRaw),
-            userInfo[PayloadKey.nonce]?.isEmpty == false
+            let nonce = userInfo[PayloadKey.nonce],
+            !nonce.isEmpty
         else {
             throw RemoteCommandAuthError.invalidToken
         }
-        let age = abs(now().timeIntervalSince1970 - timestamp)
+        let current = now().timeIntervalSince1970
+        let age = abs(current - timestamp)
         guard age <= Self.signatureMaxAgeSeconds else {
             throw RemoteCommandAuthError.invalidToken
         }
@@ -136,6 +160,12 @@ public struct RemoteCommandAuth: Sendable {
         unsigned.removeValue(forKey: PayloadKey.token)
         let expected = Self.hmacHex(key: secret, message: Self.canonicalMessage(unsigned))
         guard Self.constantTimeEquals(mac, expected) else {
+            throw RemoteCommandAuthError.invalidToken
+        }
+
+        // Record after MAC verification so forged payloads cannot burn valid nonces.
+        let expiresAt = timestamp + Self.signatureMaxAgeSeconds
+        guard Self.acceptedNonces.consume(nonce, expiresAt: expiresAt, now: current) else {
             throw RemoteCommandAuthError.invalidToken
         }
     }
@@ -156,6 +186,19 @@ public struct RemoteCommandAuth: Sendable {
         }
     }
 
+    private func removeIncompleteTokenIfPresent() throws {
+        guard FileManager.default.fileExists(atPath: tokenFileURL.path) else {
+            return
+        }
+        // Caller already observed a missing/empty token; drop the incomplete path.
+        do {
+            try FileManager.default.removeItem(at: tokenFileURL)
+        } catch {
+            // Another writer may have replaced it; the reread path handles that.
+        }
+    }
+
+    /// Writes the token to a private temp file, syncs it, then atomically publishes via `link`.
     private func persistExclusively(_ token: String) throws {
         do {
             try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
@@ -163,27 +206,47 @@ public struct RemoteCommandAuth: Sendable {
                 throw RemoteCommandAuthError.storageFailed("token is not valid UTF-8")
             }
 
-            let path = tokenFileURL.path
-            let fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+            let finalPath = tokenFileURL.path
+            let tempURL = directoryURL.appendingPathComponent(
+                ".\(Self.tokenFileName).\(UUID().uuidString).tmp",
+                isDirectory: false
+            )
+            let tempPath = tempURL.path
+
+            let fd = open(tempPath, O_WRONLY | O_CREAT | O_EXCL, 0o600)
             if fd < 0 {
-                let code = errno
-                if code == EEXIST {
-                    throw RemoteCommandAuthError.storageFailed("token file already exists")
-                }
-                throw RemoteCommandAuthError.storageFailed("open(O_EXCL) failed (\(code))")
+                throw RemoteCommandAuthError.storageFailed("open(temp O_EXCL) failed (\(errno))")
             }
-            defer { close(fd) }
+
+            let cleanupTemp = {
+                close(fd)
+                unlink(tempPath)
+            }
 
             let written: Int = data.withUnsafeBytes { buffer in
                 guard let base = buffer.baseAddress else { return -1 }
                 return write(fd, base, buffer.count)
             }
             guard written == data.count else {
+                cleanupTemp()
                 throw RemoteCommandAuthError.storageFailed("short write while creating token")
             }
             if fsync(fd) != 0 {
-                throw RemoteCommandAuthError.storageFailed("fsync failed (\(errno))")
+                let code = errno
+                cleanupTemp()
+                throw RemoteCommandAuthError.storageFailed("fsync failed (\(code))")
             }
+            close(fd)
+
+            if link(tempPath, finalPath) != 0 {
+                let code = errno
+                unlink(tempPath)
+                if code == EEXIST {
+                    throw RemoteCommandAuthError.storageFailed("token file already exists")
+                }
+                throw RemoteCommandAuthError.storageFailed("link publish failed (\(code))")
+            }
+            unlink(tempPath)
         } catch let error as RemoteCommandAuthError {
             throw error
         } catch {

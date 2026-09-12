@@ -1,6 +1,6 @@
 # L1 — 模块契约
 
-> 来源:`Sources/CaffCore/` 11 个文件(Phase 5 之后,新增 `IOPowerAssertionBackend.swift` 与 `RemoteCommandAuth.swift`)。本文件逐模块抽取公开接口、关键不变量、失败模式。
+> 来源:`Sources/CaffCore/` 12 个文件(Phase 5 之后,新增 `IOPowerAssertionBackend.swift`、`RemoteErrorPresentation.swift` 与 `RemoteCommandAuth.swift`)。本文件逐模块抽取公开接口、关键不变量、失败模式。
 
 ---
 
