@@ -25,6 +25,9 @@ public enum RemoteControlParser {
         guard let value = Int(minutes), value > 0 else {
             throw RemoteControlError.invalidDuration(minutes)
         }
+        guard value <= SafetyPolicy.standard.maximumSessionMinutes else {
+            throw RemoteControlError.invalidDuration(minutes)
+        }
         return SessionDuration(label: "\(value) Minutes", minutes: value)
     }
 

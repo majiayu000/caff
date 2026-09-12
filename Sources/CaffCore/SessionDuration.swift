@@ -26,7 +26,12 @@ public struct SessionDuration: Equatable, Sendable {
             return nil
         }
 
-        return TimeInterval(minutes * 60)
+        let (seconds, overflow) = minutes.multipliedReportingOverflow(by: 60)
+        guard !overflow else {
+            return nil
+        }
+
+        return TimeInterval(seconds)
     }
 
     public func endDate(from startDate: Date) -> Date? {
