@@ -50,6 +50,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var keepDisplayAwake = false
     var allowLongSessionsOnBattery = false
     var notificationsEnabled = false
+    /// When true, `showError` skips `NSAlert.runModal` (remote/IPC failure path).
+    var presentsErrorsRemotely = false
+    var remoteErrorPresentation = RemoteErrorPresentation()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)

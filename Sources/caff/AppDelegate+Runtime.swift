@@ -67,15 +67,32 @@ extension AppDelegate {
     }
 
     func showError(_ error: Error) {
-        lastErrorMessage = String(describing: error)
-        sendNotification(title: text.caffError, body: lastErrorMessage ?? text.unknownError)
+        let message = String(describing: error)
+        lastErrorMessage = message
         rebuildMenu()
         updateStatusTitle()
 
+        if presentsErrorsRemotely {
+            fputs("Caff remote error: \(message)\n", stderr)
+            if remoteErrorPresentation.shouldEmitNotification() {
+                sendNotification(title: text.caffError, body: message)
+            }
+            return
+        }
+
+        sendNotification(title: text.caffError, body: message)
         let alert = NSAlert()
         alert.alertStyle = .critical
         alert.messageText = text.updateSessionFailed
-        alert.informativeText = lastErrorMessage ?? text.unknownError
+        alert.informativeText = message
         alert.runModal()
+    }
+
+    /// Runs `body` with remote error presentation so nested `showError` calls never block on `NSAlert`.
+    func withRemoteErrorPresentation(_ body: () -> Void) {
+        let previous = presentsErrorsRemotely
+        presentsErrorsRemotely = true
+        defer { presentsErrorsRemotely = previous }
+        body()
     }
 }
