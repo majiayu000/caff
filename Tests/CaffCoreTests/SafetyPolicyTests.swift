@@ -33,6 +33,35 @@ private let startDate = Date(timeIntervalSince1970: 1_000)
     try policy.validate(duration: .indefinitely, powerSource: .batteryPower)
 }
 
+@Test func safetyPolicyRejectsLongSessionOnUnknownPowerByDefault() {
+    let policy = SafetyPolicy.standard
+
+    #expect(throws: SafetyPolicyError.self) {
+        try policy.validate(duration: .oneHour, powerSource: .unknown)
+    }
+}
+
+@Test func safetyPolicyRejectsIndefinitelyOnUnknownPowerByDefault() {
+    let policy = SafetyPolicy.standard
+
+    #expect(throws: SafetyPolicyError.self) {
+        try policy.validate(duration: .indefinitely, powerSource: .unknown)
+    }
+}
+
+@Test func safetyPolicyAcceptsShortSessionOnUnknownPower() throws {
+    let policy = SafetyPolicy.standard
+
+    try policy.validate(duration: .thirtyMinutes, powerSource: .unknown)
+}
+
+@Test func safetyPolicyAcceptsLongSessionOnUnknownWhenExplicitlyAllowed() throws {
+    let policy = SafetyPolicy(allowLongSessionsOnBattery: true)
+
+    try policy.validate(duration: .oneHour, powerSource: .unknown)
+    try policy.validate(duration: .indefinitely, powerSource: .unknown)
+}
+
 @Test func safetyPolicyEffectiveEndDateCapsIndefinitelyAtMaximum() {
     let policy = SafetyPolicy.standard
 
@@ -98,6 +127,26 @@ private let startDate = Date(timeIntervalSince1970: 1_000)
     let policy = SafetyPolicy(allowLongSessionsOnBattery: true)
 
     let notes = policy.sessionNotes(for: .oneHour, powerSource: .batteryPower)
+    #expect(notes.contains("Long battery allowed"))
+}
+
+@Test func safetyPolicySessionNotesForUnknownLongSessionBlocked() {
+    let policy = SafetyPolicy.standard
+
+    #expect(throws: SafetyPolicyError.self) {
+        try policy.validate(duration: .oneHour, powerSource: .unknown)
+    }
+
+    let notes = policy.sessionNotes(for: .oneHour, powerSource: .unknown)
+    #expect(notes.contains("Power: Unknown"))
+    #expect(notes.contains("Long battery blocked"))
+}
+
+@Test func safetyPolicySessionNotesForUnknownLongSessionAllowed() {
+    let policy = SafetyPolicy(allowLongSessionsOnBattery: true)
+
+    let notes = policy.sessionNotes(for: .oneHour, powerSource: .unknown)
+    #expect(notes.contains("Power: Unknown"))
     #expect(notes.contains("Long battery allowed"))
 }
 
