@@ -15,6 +15,7 @@
 | `AgentHookManager` | install / remove / 幂等 / 保留 | 非法 JSON、目录不存在、shellEscaped | 中 |
 | `AgentActivityCooldown` | touch / evaluate / 过期 / receipt / 政策 | normalizedSource 边界(""/空白) | 低(已覆盖) |
 | `RemoteControlParser` | 45/nil/"0" invalid / removed source | cooldown 错误、bool 各种值、source 空 | **高** |
+| `RemoteErrorPresentation` | 首次允许 / 间隔内拒绝 / 间隔后允许 / 默认 5s | AppKit 集成(远程路径不 runModal) | 中 |
 
 ## 待补 XCTest 清单(本轮)
 

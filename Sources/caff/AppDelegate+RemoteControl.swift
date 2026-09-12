@@ -37,28 +37,31 @@ extension AppDelegate {
 
     @objc func handleRemoteCommandNotification(_ notification: Notification) {
         let userInfo = (notification.userInfo as? [String: String]) ?? [:]
-        do {
-            try applyRemoteCommand(userInfo: userInfo)
-        } catch {
-            showError(error)
+        withRemoteErrorPresentation {
+            do {
+                try applyRemoteCommand(userInfo: userInfo)
+            } catch {
+                showError(error)
+            }
         }
     }
 
     @objc func handleGetURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent replyEvent: NSAppleEventDescriptor) {
-        guard let urlString = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue,
-              let url = URL(string: urlString),
-              var userInfo = userInfo(from: url) else {
-            showError(RemoteCommandApplyError.invalidURL(event.description))
-            return
-        }
-        if userInfo[RemoteCommandBridge.Key.action] == "start",
-           userInfo[RemoteCommandBridge.Key.source] == nil {
-            userInfo[RemoteCommandBridge.Key.source] = SessionSource.url.rawValue
-        }
-        do {
-            try applyRemoteCommand(userInfo: userInfo)
-        } catch {
-            showError(error)
+        withRemoteErrorPresentation {
+            do {
+                guard let urlString = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue,
+                      let url = URL(string: urlString),
+                      var userInfo = userInfo(from: url) else {
+                    throw RemoteCommandApplyError.invalidURL(event.description)
+                }
+                if userInfo[RemoteCommandBridge.Key.action] == "start",
+                   userInfo[RemoteCommandBridge.Key.source] == nil {
+                    userInfo[RemoteCommandBridge.Key.source] = SessionSource.url.rawValue
+                }
+                try applyRemoteCommand(userInfo: userInfo)
+            } catch {
+                showError(error)
+            }
         }
     }
 
