@@ -85,3 +85,70 @@ private func temporaryAuthDirectory() throws -> URL {
     let permissions = attributes[.posixPermissions] as? NSNumber
     #expect(permissions?.intValue == 0o600)
 }
+
+@Test func remoteCommandAuthSignsWithoutBroadcastingToken() throws {
+    let directory = try temporaryAuthDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let auth = RemoteCommandAuth(directoryURL: directory)
+    let signed = try auth.sign([
+        "action": "stop",
+        RemoteCommandAuth.PayloadKey.token: "should-be-stripped",
+    ])
+
+    #expect(signed[RemoteCommandAuth.PayloadKey.token] == nil)
+    #expect(signed[RemoteCommandAuth.PayloadKey.mac]?.isEmpty == false)
+    #expect(signed[RemoteCommandAuth.PayloadKey.nonce]?.isEmpty == false)
+    #expect(signed[RemoteCommandAuth.PayloadKey.timestamp]?.isEmpty == false)
+    try auth.authenticate(signed)
+}
+
+@Test func remoteCommandAuthRejectsTamperedOrExpiredSignature() throws {
+    let directory = try temporaryAuthDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let fixedNow = Date(timeIntervalSince1970: 1_700_000_000)
+    let auth = RemoteCommandAuth(directoryURL: directory, now: { fixedNow })
+    var signed = try auth.sign(["action": "start"])
+
+    signed["action"] = "stop"
+    let tampered = #expect(throws: RemoteCommandAuthError.self) {
+        try auth.verifySignedPayload(signed)
+    }
+    #expect(tampered == .invalidToken)
+
+    let expiredAuth = RemoteCommandAuth(
+        directoryURL: directory,
+        now: { fixedNow.addingTimeInterval(RemoteCommandAuth.signatureMaxAgeSeconds + 1) }
+    )
+    let fresh = try auth.sign(["action": "start"])
+    let expired = #expect(throws: RemoteCommandAuthError.self) {
+        try expiredAuth.verifySignedPayload(fresh)
+    }
+    #expect(expired == .invalidToken)
+}
+
+@Test func remoteCommandAuthConcurrentCreateConverges() throws {
+    let directory = try temporaryAuthDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let authA = RemoteCommandAuth(directoryURL: directory)
+    let authB = RemoteCommandAuth(directoryURL: directory)
+
+    var first: String?
+    var second: String?
+    let group = DispatchGroup()
+    group.enter()
+    DispatchQueue.global().async {
+        first = try? authA.loadOrCreateToken()
+        group.leave()
+    }
+    group.enter()
+    DispatchQueue.global().async {
+        second = try? authB.loadOrCreateToken()
+        group.leave()
+    }
+    #expect(group.wait(timeout: .now() + 5) == .success)
+    #expect(first != nil)
+    #expect(first == second)
+}

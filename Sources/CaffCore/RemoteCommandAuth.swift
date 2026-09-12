@@ -1,3 +1,5 @@
+import CryptoKit
+import Darwin
 import Foundation
 import Security
 
@@ -20,15 +22,26 @@ public enum RemoteCommandAuthError: Error, CustomStringConvertible, Equatable, S
 
 /// Per-install shared secret for authenticating local remote-control commands.
 ///
-/// The token lives under Application Support/Caff so the CLI and agent-touch hooks
-/// can attach it automatically while forged DNC/`caff://` payloads without it are rejected.
+/// The token lives under Application Support/Caff. CLI/DNC callers never broadcast
+/// the reusable secret; they attach a short-lived HMAC instead. URL callers may
+/// still pass `token=` after reading the provisioned file.
 public struct RemoteCommandAuth: Sendable {
     public static let tokenFileName = "remote-command.token"
     public static let tokenByteCount = 32
+    public static let signatureMaxAgeSeconds: TimeInterval = 120
+
+    public enum PayloadKey {
+        public static let token = "token"
+        public static let mac = "mac"
+        public static let nonce = "nonce"
+        public static let timestamp = "ts"
+    }
 
     private let directoryURL: URL
+    private let now: @Sendable () -> Date
 
-    public init(directoryURL: URL? = nil) {
+    public init(directoryURL: URL? = nil, now: @escaping @Sendable () -> Date = { Date() }) {
+        self.now = now
         if let directoryURL {
             self.directoryURL = directoryURL
         } else {
@@ -48,8 +61,16 @@ public struct RemoteCommandAuth: Sendable {
             return existing
         }
         let token = try Self.generateToken()
-        try persist(token)
-        return token
+        do {
+            try persistExclusively(token)
+            return token
+        } catch {
+            // Another process may have won the create race — reread the winner.
+            if let existing = try readTokenIfPresent() {
+                return existing
+            }
+            throw error
+        }
     }
 
     /// Returns true when `provided` matches the install token (creating the token if needed).
@@ -64,6 +85,57 @@ public struct RemoteCommandAuth: Sendable {
         }
         let expected = try loadOrCreateToken()
         guard Self.constantTimeEquals(provided, expected) else {
+            throw RemoteCommandAuthError.invalidToken
+        }
+    }
+
+    /// Authenticates a remote-control payload.
+    ///
+    /// Prefers a signed MAC (`mac`/`nonce`/`ts`) so DistributedNotificationCenter
+    /// never needs the reusable bearer token. Falls back to `token=` for URL callers.
+    public func authenticate(_ userInfo: [String: String]) throws {
+        if let mac = userInfo[PayloadKey.mac], !mac.isEmpty {
+            try verifySignedPayload(userInfo)
+            return
+        }
+        try verify(userInfo[PayloadKey.token])
+    }
+
+    /// Signs `userInfo` with a short-lived HMAC, never embedding the reusable token.
+    public func sign(_ userInfo: [String: String]) throws -> [String: String] {
+        var payload = userInfo
+        payload.removeValue(forKey: PayloadKey.token)
+        payload.removeValue(forKey: PayloadKey.mac)
+        payload[PayloadKey.nonce] = UUID().uuidString
+        payload[PayloadKey.timestamp] = String(Int(now().timeIntervalSince1970))
+        let secret = try loadOrCreateToken()
+        payload[PayloadKey.mac] = Self.hmacHex(key: secret, message: Self.canonicalMessage(payload))
+        return payload
+    }
+
+    /// Verifies a MAC-signed payload without requiring the reusable token in transit.
+    public func verifySignedPayload(_ userInfo: [String: String]) throws {
+        guard let mac = userInfo[PayloadKey.mac], !mac.isEmpty else {
+            throw RemoteCommandAuthError.missingToken
+        }
+        guard
+            let tsRaw = userInfo[PayloadKey.timestamp],
+            let timestamp = TimeInterval(tsRaw),
+            userInfo[PayloadKey.nonce]?.isEmpty == false
+        else {
+            throw RemoteCommandAuthError.invalidToken
+        }
+        let age = abs(now().timeIntervalSince1970 - timestamp)
+        guard age <= Self.signatureMaxAgeSeconds else {
+            throw RemoteCommandAuthError.invalidToken
+        }
+
+        let secret = try loadOrCreateToken()
+        var unsigned = userInfo
+        unsigned.removeValue(forKey: PayloadKey.mac)
+        unsigned.removeValue(forKey: PayloadKey.token)
+        let expected = Self.hmacHex(key: secret, message: Self.canonicalMessage(unsigned))
+        guard Self.constantTimeEquals(mac, expected) else {
             throw RemoteCommandAuthError.invalidToken
         }
     }
@@ -84,17 +156,34 @@ public struct RemoteCommandAuth: Sendable {
         }
     }
 
-    private func persist(_ token: String) throws {
+    private func persistExclusively(_ token: String) throws {
         do {
             try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
             guard let data = token.data(using: .utf8) else {
                 throw RemoteCommandAuthError.storageFailed("token is not valid UTF-8")
             }
-            try data.write(to: tokenFileURL, options: .atomic)
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o600],
-                ofItemAtPath: tokenFileURL.path
-            )
+
+            let path = tokenFileURL.path
+            let fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+            if fd < 0 {
+                let code = errno
+                if code == EEXIST {
+                    throw RemoteCommandAuthError.storageFailed("token file already exists")
+                }
+                throw RemoteCommandAuthError.storageFailed("open(O_EXCL) failed (\(code))")
+            }
+            defer { close(fd) }
+
+            let written: Int = data.withUnsafeBytes { buffer in
+                guard let base = buffer.baseAddress else { return -1 }
+                return write(fd, base, buffer.count)
+            }
+            guard written == data.count else {
+                throw RemoteCommandAuthError.storageFailed("short write while creating token")
+            }
+            if fsync(fd) != 0 {
+                throw RemoteCommandAuthError.storageFailed("fsync failed (\(errno))")
+            }
         } catch let error as RemoteCommandAuthError {
             throw error
         } catch {
@@ -109,6 +198,18 @@ public struct RemoteCommandAuth: Sendable {
             throw RemoteCommandAuthError.storageFailed("SecRandomCopyBytes failed (\(status))")
         }
         return bytes.map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func canonicalMessage(_ userInfo: [String: String]) -> String {
+        userInfo.keys.sorted().map { key in
+            "\(key)=\(userInfo[key] ?? "")"
+        }.joined(separator: "\n")
+    }
+
+    static func hmacHex(key: String, message: String) -> String {
+        let symmetricKey = SymmetricKey(data: Data(key.utf8))
+        let digest = HMAC<SHA256>.authenticationCode(for: Data(message.utf8), using: symmetricKey)
+        return Data(digest).map { String(format: "%02x", $0) }.joined()
     }
 
     private static func constantTimeEquals(_ lhs: String, _ rhs: String) -> Bool {

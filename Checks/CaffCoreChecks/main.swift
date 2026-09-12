@@ -290,6 +290,21 @@ do {
     } catch let error as RemoteCommandAuthError {
         check(error == .invalidToken, "remote auth should report invalid token")
     }
+    let signed = try auth.sign([
+        "action": "stop",
+        RemoteCommandAuth.PayloadKey.token: "must-not-broadcast",
+    ])
+    check(signed[RemoteCommandAuth.PayloadKey.token] == nil, "signed payload must omit reusable token")
+    check(signed[RemoteCommandAuth.PayloadKey.mac]?.isEmpty == false, "signed payload must include mac")
+    try auth.authenticate(signed)
+    var tampered = signed
+    tampered["action"] = "start"
+    do {
+        try auth.verifySignedPayload(tampered)
+        failures.append("remote auth should reject tampered mac payload")
+    } catch let error as RemoteCommandAuthError {
+        check(error == .invalidToken, "remote auth should report invalid mac")
+    }
 } catch {
     failures.append("remote command auth checks failed: \(error)")
 }

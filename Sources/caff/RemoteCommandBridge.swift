@@ -13,18 +13,18 @@ enum RemoteCommandBridge {
         static let source = "source"
         static let agentSource = "agentSource"
         static let cooldownSeconds = "cooldownSeconds"
-        static let token = "token"
+        static let token = RemoteCommandAuth.PayloadKey.token
+        static let mac = RemoteCommandAuth.PayloadKey.mac
+        static let nonce = RemoteCommandAuth.PayloadKey.nonce
+        static let timestamp = RemoteCommandAuth.PayloadKey.timestamp
     }
 
-    /// Attaches the per-install remote-command token when missing, then posts over DNC.
+    /// Signs the payload with a short-lived HMAC and posts over DNC without broadcasting the reusable token.
     static func post(
         _ userInfo: [String: String],
         auth: RemoteCommandAuth = RemoteCommandAuth()
     ) throws {
-        var payload = userInfo
-        if payload[Key.token] == nil {
-            payload[Key.token] = try auth.loadOrCreateToken()
-        }
+        let payload = try auth.sign(userInfo)
         DistributedNotificationCenter.default().postNotificationName(
             notificationName,
             object: bundleIdentifier,

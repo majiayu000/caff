@@ -157,7 +157,7 @@ The same executable accepts `start`, `stop`, `status`, `agent-touch`, `install-h
 - `caff://stop?token=<install-token>`
 - `caff://agent-touch?source=codex&cooldownSeconds=1800&token=<install-token>`
 
-Remote control over DistributedNotificationCenter and `caff://` URLs requires a per-install shared secret stored at `~/Library/Application Support/Caff/remote-command.token`. The CLI and installed `agent-touch` hooks attach that token automatically. URL callers must include a matching `token` query parameter; missing or wrong tokens are rejected before start/stop/agent-touch runs.
+Remote control over DistributedNotificationCenter and `caff://` URLs requires a per-install shared secret stored at `~/Library/Application Support/Caff/remote-command.token` (created at app launch and by the CLI). CLI/`agent-touch` posts over DNC use a short-lived HMAC (`mac`/`nonce`/`ts`) derived from that secret and never broadcast the reusable token. URL callers must include a matching `token` query parameter; missing or wrong credentials are rejected before start/stop/agent-touch runs, while token-storage failures surface as normal errors.
 
 For long-running interactive agent CLIs, `agent-touch` refreshes a last-activity cooldown without relying on the `codex` or `claude` process exiting:
 

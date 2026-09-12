@@ -21,6 +21,12 @@ private enum RemoteCommandApplyError: Error, CustomStringConvertible {
 
 extension AppDelegate {
     func registerRemoteControlHandlers() {
+        // Provision the install token at launch so the first caff:// caller can read it.
+        do {
+            _ = try RemoteCommandAuth().loadOrCreateToken()
+        } catch {
+            fputs("Caff failed to provision remote command token: \(error)\n", stderr)
+        }
         DistributedNotificationCenter.default().addObserver(
             self,
             selector: #selector(handleRemoteCommandNotification(_:)),
@@ -40,7 +46,7 @@ extension AppDelegate {
         withRemoteErrorPresentation {
             do {
                 try applyRemoteCommand(userInfo: userInfo)
-            } catch is RemoteCommandAuthError {
+            } catch RemoteCommandAuthError.missingToken, RemoteCommandAuthError.invalidToken {
                 // Reject forged/missing-token IPC without modal spam.
                 fputs("Caff rejected unauthenticated remote command notification\n", stderr)
             } catch {
@@ -62,7 +68,7 @@ extension AppDelegate {
                     userInfo[RemoteCommandBridge.Key.source] = SessionSource.url.rawValue
                 }
                 try applyRemoteCommand(userInfo: userInfo)
-            } catch is RemoteCommandAuthError {
+            } catch RemoteCommandAuthError.missingToken, RemoteCommandAuthError.invalidToken {
                 fputs("Caff rejected unauthenticated caff:// remote command\n", stderr)
             } catch {
                 showError(error)
@@ -71,7 +77,7 @@ extension AppDelegate {
     }
 
     private func applyRemoteCommand(userInfo: [String: String]) throws {
-        try RemoteCommandAuth().verify(userInfo[RemoteCommandBridge.Key.token])
+        try RemoteCommandAuth().authenticate(userInfo)
         let action = userInfo[RemoteCommandBridge.Key.action] ?? ""
         switch action {
         case "start":
