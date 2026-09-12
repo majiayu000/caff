@@ -18,9 +18,24 @@ import Testing
     #expect(parsed.label == "45 Minutes")
 }
 
-@Test func remoteControlDurationParsesVeryLargeValue() throws {
-    let parsed = try RemoteControlParser.duration(minutes: "99999")
-    #expect(parsed.minutes == 99999)
+@Test func remoteControlDurationParsesMaximumAllowedValue() throws {
+    let maxMinutes = SafetyPolicy.standard.maximumSessionMinutes
+    let parsed = try RemoteControlParser.duration(minutes: "\(maxMinutes)")
+    #expect(parsed.minutes == maxMinutes)
+    #expect(parsed.label == "\(maxMinutes) Minutes")
+}
+
+@Test func remoteControlDurationRejectsAboveMaximumSessionMinutes() {
+    let overMax = SafetyPolicy.standard.maximumSessionMinutes + 1
+    #expect(throws: RemoteControlError.self) {
+        _ = try RemoteControlParser.duration(minutes: "\(overMax)")
+    }
+}
+
+@Test func remoteControlDurationRejectsIntMaxScaleMinutes() {
+    #expect(throws: RemoteControlError.self) {
+        _ = try RemoteControlParser.duration(minutes: "\(Int.max)")
+    }
 }
 
 @Test func remoteControlDurationRejectsZero() {
