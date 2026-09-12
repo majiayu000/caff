@@ -105,11 +105,29 @@ do {
     failures.append("battery policy failed with unexpected error: \(error)")
 }
 
+do {
+    try policy.validate(duration: .oneHour, powerSource: .unknown)
+    failures.append("long sessions on unknown power should be blocked by default (fail closed)")
+} catch let error as SafetyPolicyError {
+    check(
+        error == .longSessionOnBattery(durationLabel: "1 Hour", thresholdMinutes: 60),
+        "unknown power policy should report the blocked duration"
+    )
+} catch {
+    failures.append("unknown power policy failed with unexpected error: \(error)")
+}
+
+check(
+    policy.sessionNotes(for: .oneHour, powerSource: .unknown).contains("Long battery blocked"),
+    "policy notes should surface long-session block for unknown power"
+)
+
 let permissivePolicy = SafetyPolicy(allowLongSessionsOnBattery: true)
 do {
     try permissivePolicy.validate(duration: .fourHours, powerSource: .batteryPower)
+    try permissivePolicy.validate(duration: .fourHours, powerSource: .unknown)
 } catch {
-    failures.append("explicitly allowed long battery sessions should pass validation: \(error)")
+    failures.append("explicitly allowed long battery/unknown sessions should pass validation: \(error)")
 }
 
 let agentTouch = Date(timeIntervalSince1970: 7_000)

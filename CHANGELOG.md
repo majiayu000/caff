@@ -4,6 +4,7 @@ All notable changes to Caff are documented here.
 
 ## Unreleased
 
+- Fixed `SafetyPolicy` / `PowerSourceMonitor` to fail closed on empty or unknown power source: long and indefinite sessions now require confirmed AC when `allowLongSessionsOnBattery` is false.
 - Added README status badges for CI, tests, release, and license.
 - Updated GitHub Actions workflows to current runner and action versions.
 

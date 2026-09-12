@@ -65,7 +65,8 @@
 - `static func formatMinutes(_ minutes: Int) -> String`
 
 **不变量**:
-- `validate` 触发拒绝的条件:powerSource == battery AND !allowLongSessionsOnBattery AND duration.isLongBattery
+- `validate` 触发拒绝的条件:powerSource != acPower AND !allowLongSessionsOnBattery AND duration.isLongBattery（fail closed：`.batteryPower` 与 `.unknown` 均拒绝；仅确认的 `.acPower` 放行长/无限会话）
+- `PowerSourceMonitor.current()`：IOKit 电源列表为空或无法识别为 AC/battery 时返回 `.unknown`（不再假设 AC）
 - `effectiveEndDate` 取 min(requested, maximum) — 不超过 maximum
 - `Indefinitely` 的 endDate 永远为 nil,policy 把它截到 maximum
 - `isLongBatterySession`:Indefinitely 一律算长;有 minutes 则 minutes >= threshold
@@ -75,10 +76,14 @@
 |---|---|---|---|
 | 30m | AC | * | 通过 |
 | 30m | battery | * | 通过(< 60 阈值) |
+| 30m | unknown | * | 通过(< 60 阈值) |
 | 60m | battery | false | **拒绝** |
+| 60m | unknown | false | **拒绝**（fail closed） |
 | 60m | battery | true | 通过 |
+| 60m | unknown | true | 通过 |
 | 4h | battery | false | 拒绝 |
 | Indefinitely | battery | false | 拒绝 |
+| Indefinitely | unknown | false | 拒绝 |
 | Indefinitely | battery | true | 通过,effectiveEnd = start+maxMinutes |
 | 4h | AC | false | 通过,effectiveEnd = start+4h |
 

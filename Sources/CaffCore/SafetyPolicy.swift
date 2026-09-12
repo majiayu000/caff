@@ -51,8 +51,10 @@ public struct SafetyPolicy: Equatable, Sendable {
     }
 
     public func validate(duration: SessionDuration, powerSource: PowerSourceState) throws {
-        if powerSource == .batteryPower,
-           !allowLongSessionsOnBattery,
+        // Fail closed: long/indefinite sessions require confirmed AC when battery
+        // long sessions are disallowed. Reject both .batteryPower and .unknown.
+        if !allowLongSessionsOnBattery,
+           powerSource != .acPower,
            isLongBatterySession(duration) {
             throw SafetyPolicyError.longSessionOnBattery(
                 durationLabel: duration.label,
@@ -81,7 +83,7 @@ public struct SafetyPolicy: Equatable, Sendable {
             notes.append("Duration is capped")
         }
 
-        if powerSource == .batteryPower, isLongBatterySession(duration) {
+        if powerSource != .acPower, isLongBatterySession(duration) {
             notes.append(allowLongSessionsOnBattery ? "Long battery allowed" : "Long battery blocked")
         }
 
@@ -110,19 +112,17 @@ public enum PowerSourceMonitor {
         let snapshot = IOPSCopyPowerSourcesInfo().takeRetainedValue()
         let sources = IOPSCopyPowerSourcesList(snapshot).takeRetainedValue() as [AnyObject]
 
+        // Empty or unreadable IOKit lists are ambiguous — fail closed as .unknown
+        // rather than assuming AC (which previously skipped the long-session guard).
         guard !sources.isEmpty else {
-            return .acPower
+            return .unknown
         }
-
-        var sawBatterySource = false
 
         for source in sources {
             guard let description = IOPSGetPowerSourceDescription(snapshot, source)?.takeUnretainedValue() as? [String: Any],
                   let state = description[kIOPSPowerSourceStateKey as String] as? String else {
                 continue
             }
-
-            sawBatterySource = true
 
             if state == kIOPSACPowerValue {
                 return .acPower
@@ -133,6 +133,6 @@ public enum PowerSourceMonitor {
             }
         }
 
-        return sawBatterySource ? .unknown : .acPower
+        return .unknown
     }
 }
