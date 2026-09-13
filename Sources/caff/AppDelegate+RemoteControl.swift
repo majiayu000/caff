@@ -30,7 +30,11 @@ extension AppDelegate {
             _ = try RemoteCommandAuth().loadOrCreateToken()
             RemoteCommandUserAuthorization.recordProvisioningLeaseIfNeeded()
         } catch {
+            // Do not register DNC/URL handlers after a failed provision: verification
+            // can re-enter LocalAuthentication on forged MAC payloads and break the
+            // quiet-rejection guarantee.
             fputs("Caff failed to provision remote command token: \(error)\n", stderr)
+            return
         }
         DistributedNotificationCenter.default().addObserver(
             self,

@@ -408,6 +408,13 @@ public struct RemoteCommandAuth: Sendable {
     public static let provisionedTokenPrefix = "caff-v1:"
     private static let slotClaimAccountPrefix = "slot-claim.v1."
     private static let slotClaimMessagePrefix = "slot-claim-v1|"
+    /// Durable proof that Caff minted `token` under this slot after a remint.
+    /// Cross-process adopt requires a matching seal so lease-validated remint does
+    /// not rotate again on every fresh CLI/app process (breaking MAC auth).
+    /// Peers who plant token+lease cannot forge a seal for a post-remint secret
+    /// they cannot read from the executable-scoped token item.
+    private static let slotMintSealAccountPrefix = "slot-mint-seal.v1."
+    private static let slotMintSealMessagePrefix = "slot-mint-seal-v1|"
     /// Well-known plantable account — scrubbed on bootstrap, never used as provenance.
     /// Historical `slot-trust.v1` markers are rejected; user attestation gates adopt.
     public static let slotTrustMarkerAccount = "slot-trust.v1"
@@ -770,6 +777,7 @@ public struct RemoteCommandAuth: Sendable {
                             context: "established token nonce-store remint"
                         )
                         try deleteKeychainAccount(claimAccount, context: "claim scrub on nonce remint")
+                        try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub on nonce remint")
                     }
                 case .remint:
                     // First Caff process to claim a pre-existing public pointer — discard
@@ -785,6 +793,7 @@ public struct RemoteCommandAuth: Sendable {
                         expectedToken: existing,
                         context: "preplant slot nonce rotate"
                     )
+                    try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub on preplant rotate")
                 }
             } else if let corrupt = observed {
                 try deleteKeychainTokenIfMatches(
@@ -793,6 +802,7 @@ public struct RemoteCommandAuth: Sendable {
                     context: "corrupt slot token remove"
                 )
                 try deleteKeychainAccount(claimAccount, context: "claim scrub on corrupt token")
+                try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub on corrupt token")
             }
 
             // After a miss/corrupt/remint path, adopt a concurrent winner if present
@@ -812,6 +822,7 @@ public struct RemoteCommandAuth: Sendable {
                             context: "winner token nonce-store remint"
                         )
                         try deleteKeychainAccount(claimAccount, context: "claim scrub on winner remint")
+                        try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub on winner remint")
                     }
                 case .remint:
                     try deleteKeychainTokenIfMatches(
@@ -825,6 +836,7 @@ public struct RemoteCommandAuth: Sendable {
                         expectedToken: winner,
                         context: "winner preplant nonce rotate"
                     )
+                    try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub on winner rotate")
                 }
             }
 
@@ -849,6 +861,7 @@ public struct RemoteCommandAuth: Sendable {
                         expectedToken: leftover,
                         context: "late winner preplant nonce rotate"
                     )
+                    try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub on late winner rotate")
                 }
             } else {
                 try deleteKeychainAccount(nonceAccount, context: "corrupt slot nonce remove")
@@ -858,6 +871,7 @@ public struct RemoteCommandAuth: Sendable {
             // this exclusive create. Clear any stale nonce/claim before minting.
             try deleteKeychainAccount(nonceAccount, context: "fresh slot nonce scrub")
             try deleteKeychainAccount(claimAccount, context: "fresh slot claim scrub")
+            try scrubMintSeal(forClaimAccount: claimAccount, context: "fresh slot mint seal scrub")
         }
 
         let token = Self.provisionedTokenPrefix + (try Self.generateToken())
@@ -867,6 +881,9 @@ public struct RemoteCommandAuth: Sendable {
             try writeKeychainToken(token, account: slot.account)
             try writeSlotClaim(claimAccount: claimAccount, token: token)
             try nonceStore.provisionEmpty(integrityKey: token)
+            // Durable mint seal lets fresh CLI/app processes adopt this secret without
+            // reminting again (lease-validated remint is only for unsealed preplants).
+            try writeMintSeal(forSlot: slot.account, token: token)
             // Seal this process's attestation cache so subsequent loads adopt the
             // claim we just published without rotating again.
             let sealedKey = claimAccount + "|" + Self.slotClaimValue(forToken: token)
@@ -899,9 +916,10 @@ public struct RemoteCommandAuth: Sendable {
     /// and even an HMAC-valid signing lease (lease MAC is peer-computable from the
     /// planted token). Pre-existing claim/lease material is therefore *not* proof of
     /// Caff provenance. Provenance is: exclusive create of the per-slot claim by a
-    /// live process (then remint), or a process-local seal after our mint.
+    /// live process (then remint), a process-local seal after our mint, or a durable
+    /// mint seal written under the executable ACL together with a Caff-minted token.
     /// LocalAuthentication / a verified lease prove user presence for remint but
-    /// never authorize adopting a possibly attacker-known secret.
+    /// never authorize adopting a possibly attacker-known secret without a mint seal.
     private func claimSlotOwnership(claimAccount: String, token: String) throws -> SlotClaimResult {
         let expected = Self.slotClaimValue(forToken: token)
         let attestationKey = claimAccount + "|" + expected
@@ -911,10 +929,12 @@ public struct RemoteCommandAuth: Sendable {
             do {
                 try writeSlotClaim(claimAccount: claimAccount, token: token, allowUpdate: false)
                 // We created the claim against a possibly preplanted token — remint.
+                try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub on claim create remint")
                 return .remint
             } catch {
                 // Lost the claim create race. A peer can SecItemAdd a matching claim
                 // for a planted token in that window — do not treat the race as provenance.
+                try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub on claim race remint")
                 return .remint
             }
         }
@@ -924,8 +944,18 @@ public struct RemoteCommandAuth: Sendable {
             return .adopt
         }
 
-        // Lease-validated tokens skip LocalAuthentication but still remint: peers who
-        // plant the token can also plant a matching lease.
+        // Cross-process: a prior Caff mint wrote an HMAC mint seal bound to this token.
+        // Lease-validated remint must not fire again or CLI sign → app verify rotates
+        // the secret and breaks MAC auth / unattended hooks.
+        if let existingClaim = try readSlotClaimValue(claimAccount: claimAccount),
+           Self.constantTimeEquals(existingClaim, expected),
+           try mintSealMatches(claimAccount: claimAccount, token: token) {
+            Self.sealAttestedClaimKey(attestationKey)
+            return .adopt
+        }
+
+        // Lease-validated tokens skip LocalAuthentication but still remint when no
+        // mint seal exists: peers who plant the token can also plant a matching lease.
         let presenceProven = Self.hasRecentUserPresence(consume: false)
             || Self.isLeaseValidatedToken(token)
         if presenceProven {
@@ -933,6 +963,7 @@ public struct RemoteCommandAuth: Sendable {
                   Self.constantTimeEquals(existingClaim, expected)
             else {
                 try deleteKeychainAccount(claimAccount, context: "slot claim mismatch remove")
+                try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub on claim mismatch")
                 return .remint
             }
             // Keep presence noted so the caller can record a lease for the reminted secret.
@@ -940,11 +971,13 @@ public struct RemoteCommandAuth: Sendable {
                 Self.noteRecentUserPresence()
             }
             try deleteKeychainAccount(claimAccount, context: "preplant claim rotate after attestation")
+            try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub after attestation remint")
             return .remint
         }
 
         if Self.slotClaimAttestationHandler == nil {
             try deleteKeychainAccount(claimAccount, context: "preplant claim rotate without attestation")
+            try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub without attestation")
             return .remint
         }
         throw SlotClaimAttestationRequired()
@@ -963,9 +996,10 @@ public struct RemoteCommandAuth: Sendable {
         return try body()
     }
 
-    /// Lock payload: owner PID + wall-clock fencing hint. Abandoned locks left by a
-    /// *dead* holder are reclaimed; a still-living owner is never preempted on expiry
-    /// alone (sleep/suspend must not allow overlapping successors).
+    /// Lock payload: owner PID + process-start identity + wall-clock fencing hint.
+    /// Abandoned locks left by a *dead* holder (or a reused PID whose start time no
+    /// longer matches) are reclaimed; a still-living owner is never preempted on
+    /// expiry alone (sleep/suspend must not allow overlapping successors).
     private static let keychainLockTTL: TimeInterval = 600
 
     fileprivate static func acquireKeychainLock(account: String, label: String) throws {
@@ -1007,10 +1041,28 @@ public struct RemoteCommandAuth: Sendable {
     }
 
     private static func keychainLockPayload(expiresAt: TimeInterval) -> String {
-        "v1:\(getpid()):\(Int(expiresAt))"
+        let start = currentProcessStartTime()
+        return "v2:\(getpid()):\(start.sec):\(start.usec):\(Int(expiresAt))"
     }
 
-    private static func parseKeychainLockPayload(_ raw: String) -> (pid: pid_t, expiresAt: TimeInterval)? {
+    private static func parseKeychainLockPayload(
+        _ raw: String
+    ) -> (pid: pid_t, startSec: Int64, startUsec: Int32, expiresAt: TimeInterval)? {
+        if raw.hasPrefix("v2:") {
+            let parts = raw.split(separator: ":", omittingEmptySubsequences: false)
+            // v2:pid:startSec:startUsec:expiresAt
+            guard parts.count == 5,
+                  let pid = pid_t(parts[1]),
+                  let startSec = Int64(parts[2]),
+                  let startUsec = Int32(parts[3]),
+                  let expiresAt = TimeInterval(parts[4])
+            else {
+                return nil
+            }
+            return (pid, startSec, startUsec, expiresAt)
+        }
+        // Legacy v1:pid:expiresAt — treat missing start identity as unknown (0,0)
+        // so reclaim still requires a dead PID (start-time mismatch cannot help).
         guard raw.hasPrefix("v1:"),
               let pidSplit = raw.dropFirst(3).firstIndex(of: ":")
         else {
@@ -1021,7 +1073,23 @@ public struct RemoteCommandAuth: Sendable {
         guard let pid = pid_t(pidRaw), let expiresAt = TimeInterval(expiryRaw) else {
             return nil
         }
-        return (pid, expiresAt)
+        return (pid, 0, 0, expiresAt)
+    }
+
+    private static func currentProcessStartTime() -> (sec: Int64, usec: Int32) {
+        processStartTime(getpid()) ?? (0, 0)
+    }
+
+    private static func processStartTime(_ pid: pid_t) -> (sec: Int64, usec: Int32)? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        let result = sysctl(&mib, u_int(mib.count), &info, &size, nil, 0)
+        guard result == 0, size >= MemoryLayout<kinfo_proc>.stride else {
+            return nil
+        }
+        let tv = info.kp_proc.p_starttime
+        return (Int64(tv.tv_sec), Int32(tv.tv_usec))
     }
 
     private static func reclaimStaleKeychainLockIfNeeded(account: String) throws -> Bool {
@@ -1056,10 +1124,20 @@ public struct RemoteCommandAuth: Sendable {
             return true
         }
 
-        // Only reclaim when the owner is dead. Wall-clock expiry alone must not
-        // preempt a suspended/sleeping holder that can still resume and mutate state.
-        guard !isProcessAlive(parsed.pid) else {
-            return false
+        // Reclaim when the owner is dead, or when the PID was reused by a different
+        // process (start time no longer matches the lock's recorded identity).
+        if isProcessAlive(parsed.pid) {
+            if parsed.startSec != 0 || parsed.startUsec != 0,
+               let liveStart = processStartTime(parsed.pid),
+               liveStart.sec == parsed.startSec,
+               liveStart.usec == parsed.startUsec {
+                return false
+            }
+            if parsed.startSec == 0 && parsed.startUsec == 0 {
+                // Legacy v1 locks: PID still alive — do not reclaim on expiry alone.
+                return false
+            }
+            // PID alive but start identity mismatch → reused PID; reclaim.
         }
         try forceReleaseKeychainLock(account: account)
         return true
@@ -1102,6 +1180,11 @@ public struct RemoteCommandAuth: Sendable {
             return
         }
         guard parsed.pid == getpid() else {
+            return
+        }
+        if let start = processStartTime(getpid()),
+           (parsed.startSec != 0 || parsed.startUsec != 0),
+           (start.sec != parsed.startSec || start.usec != parsed.startUsec) {
             return
         }
         try forceReleaseKeychainLock(account: account)
@@ -1194,6 +1277,89 @@ public struct RemoteCommandAuth: Sendable {
 
     private static func slotClaimValue(forToken token: String) -> String {
         hmacHex(key: token, message: slotClaimMessagePrefix + token)
+    }
+
+    private static func slotMintSealAccount(forSlot slotAccount: String) -> String {
+        slotMintSealAccountPrefix + slotAccount
+    }
+
+    private static func slotAccount(fromClaimAccount claimAccount: String) -> String? {
+        guard claimAccount.hasPrefix(slotClaimAccountPrefix) else { return nil }
+        let slot = String(claimAccount.dropFirst(slotClaimAccountPrefix.count))
+        return slot.isEmpty ? nil : slot
+    }
+
+    private static func mintSealValue(forToken token: String) -> String {
+        hmacHex(key: token, message: slotMintSealMessagePrefix + token)
+    }
+
+    private func scrubMintSeal(forClaimAccount claimAccount: String, context: String) throws {
+        guard let slot = Self.slotAccount(fromClaimAccount: claimAccount) else { return }
+        try deleteKeychainAccount(Self.slotMintSealAccount(forSlot: slot), context: context)
+    }
+
+    private func mintSealMatches(claimAccount: String, token: String) throws -> Bool {
+        guard let slot = Self.slotAccount(fromClaimAccount: claimAccount) else { return false }
+        let account = Self.slotMintSealAccount(forSlot: slot)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.keychainService,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound {
+            return false
+        }
+        if status == errSecAuthFailed || status == errSecInteractionNotAllowed {
+            try deleteKeychainAccount(account, context: "mint seal ACL rotate")
+            return false
+        }
+        guard status == errSecSuccess,
+              let data = item as? Data,
+              let value = String(data: data, encoding: .utf8)
+        else {
+            return false
+        }
+        return Self.constantTimeEquals(value, Self.mintSealValue(forToken: token))
+    }
+
+    private func writeMintSeal(forSlot slotAccount: String, token: String) throws {
+        let account = Self.slotMintSealAccount(forSlot: slotAccount)
+        // Replace any preplanted seal before publishing ours with executable ACL.
+        try deleteKeychainAccount(account, context: "mint seal replace")
+        guard let data = Self.mintSealValue(forToken: token).data(using: .utf8) else {
+            throw RemoteCommandAuthError.storageFailed("mint seal is not UTF-8")
+        }
+        let access = try Self.makeExecutableScopedAccess(descriptor: "Caff remote command mint seal")
+        var addQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.keychainService,
+            kSecAttrAccount as String: account,
+            kSecAttrLabel as String: "Caff remote command mint seal",
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecAttrAccess as String: access,
+            kSecValueData as String: data,
+        ]
+        var status = SecItemAdd(addQuery as CFDictionary, nil)
+        if status == errSecParam {
+            addQuery.removeValue(forKey: kSecAttrAccessible as String)
+            status = SecItemAdd(addQuery as CFDictionary, nil)
+        }
+        if status == errSecDuplicateItem {
+            try deleteKeychainAccount(account, context: "mint seal duplicate replace")
+            status = SecItemAdd(addQuery as CFDictionary, nil)
+            if status == errSecParam {
+                addQuery.removeValue(forKey: kSecAttrAccessible as String)
+                status = SecItemAdd(addQuery as CFDictionary, nil)
+            }
+        }
+        guard status == errSecSuccess else {
+            throw RemoteCommandAuthError.storageFailed("mint seal write failed (\(status))")
+        }
     }
 
     private func ensureNonceStore(forToken token: String, nonceAccount: String) throws {

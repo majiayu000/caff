@@ -31,6 +31,11 @@ enum RemoteCommandUserAuthorization {
 
     private static let leasePayloadPrefix = "v1:"
 
+    /// Scopes whose HMAC-valid leases were observed this process. Used so a remint
+    /// rebinds only the originating scope (agent-touch must not promote to signing).
+    private static let validatedScopeLock = NSLock()
+    private static var validatedProvisioningScopes: Set<Scope> = []
+
     enum Error: Swift.Error, CustomStringConvertible {
         case denied
         case unavailable(String)
@@ -63,6 +68,7 @@ enum RemoteCommandUserAuthorization {
         }
         try authenticateUser(reason: reason)
         RemoteCommandAuth.noteRecentUserPresence()
+        noteValidatedProvisioningScope(scope)
         try writeLease(scope: scope, expiresAt: now.addingTimeInterval(leaseSeconds).timeIntervalSince1970)
     }
 
@@ -76,6 +82,7 @@ enum RemoteCommandUserAuthorization {
     ) throws {
         try authenticateUser(reason: reason)
         RemoteCommandAuth.noteRecentUserPresence()
+        noteValidatedProvisioningScope(scope)
         try writeLease(scope: scope, expiresAt: now.addingTimeInterval(leaseSeconds).timeIntervalSince1970)
     }
 
@@ -88,6 +95,8 @@ enum RemoteCommandUserAuthorization {
     ) throws {
         try authenticateUser(reason: reason)
         RemoteCommandAuth.noteRecentUserPresence()
+        // Tickets authorize general remote control; rebind the signing scope.
+        noteValidatedProvisioningScope(.signing)
     }
 
     /// Registers LocalAuthentication as the gate when Caff must rotate a pre-existing
@@ -106,30 +115,40 @@ enum RemoteCommandUserAuthorization {
     /// Lease validity never authorizes adopting a preplanted secret.
     static func noteValidLeasesIfPresent(now: Date = Date()) {
         do {
-            _ = try hasValidLease(for: .agentTouch, now: now)
-            _ = try hasValidLease(for: .signing, now: now)
+            // Probe concrete accounts (not hasValidLease) so agent-touch is not
+            // collapsed into signing via the agent-touch→signing superset rule.
+            let timestamp = now.timeIntervalSince1970
+            if let expiresAt = try readLeaseExpiresAt(scope: .signing), expiresAt > timestamp {
+                noteValidatedProvisioningScope(.signing)
+            }
+            if let expiresAt = try readLeaseExpiresAt(scope: .agentTouch), expiresAt > timestamp {
+                noteValidatedProvisioningScope(.agentTouch)
+            }
         } catch {
             // Best-effort: token load will fall back to attestation/remint.
         }
     }
 
-    /// After provisioning that consumed user presence, record a signing lease so the
-    /// next process can adopt the reminted token without another prompt.
+    /// After provisioning that consumed user presence, record a lease for the same
+    /// scope that authorized the remint so agent-touch-only installs are not promoted
+    /// into a general signing lease.
     static func recordProvisioningLeaseIfNeeded(
-        leaseSeconds: TimeInterval = defaultLeaseSeconds,
+        leaseSeconds: TimeInterval? = nil,
         now: Date = Date()
     ) {
         guard RemoteCommandAuth.hasRecentUserPresence(consume: true) else { return }
+        let scope = consumeValidatedProvisioningScope()
+        let seconds = leaseSeconds ?? (scope == .agentTouch ? hookLeaseSeconds : defaultLeaseSeconds)
         do {
-            if try hasValidLease(for: .signing, now: now) {
+            if try hasExactValidLease(scope: scope, now: now) {
                 return
             }
             // Presence was just proven for remint; keep it noted through writeLease's
             // loadOrCreateToken so we do not re-enter attestation.
             RemoteCommandAuth.noteRecentUserPresence()
             try writeLease(
-                scope: .signing,
-                expiresAt: now.addingTimeInterval(leaseSeconds).timeIntervalSince1970
+                scope: scope,
+                expiresAt: now.addingTimeInterval(seconds).timeIntervalSince1970
             )
         } catch {
             // Best-effort — next launch may re-attest.
@@ -139,6 +158,36 @@ enum RemoteCommandUserAuthorization {
     /// Deletes the Keychain lease for `scope` (best-effort for missing items).
     static func revokeLease(scope: Scope) throws {
         try deleteKeychainItem(account: scope.rawValue, context: "lease revoke")
+    }
+
+    private static func noteValidatedProvisioningScope(_ scope: Scope) {
+        validatedScopeLock.lock()
+        validatedProvisioningScopes.insert(scope)
+        validatedScopeLock.unlock()
+    }
+
+    /// Prefer signing when both were valid; otherwise the sole observed scope;
+    /// default to signing for LA-only presence without a prior lease probe.
+    private static func consumeValidatedProvisioningScope() -> Scope {
+        validatedScopeLock.lock()
+        let scopes = validatedProvisioningScopes
+        validatedProvisioningScopes.removeAll()
+        validatedScopeLock.unlock()
+        if scopes.contains(.signing) {
+            return .signing
+        }
+        if scopes.contains(.agentTouch) {
+            return .agentTouch
+        }
+        return .signing
+    }
+
+    private static func hasExactValidLease(scope: Scope, now: Date) throws -> Bool {
+        let timestamp = now.timeIntervalSince1970
+        guard let expiresAt = try readLeaseExpiresAt(scope: scope), expiresAt > timestamp else {
+            return false
+        }
+        return true
     }
 
     private static func hasValidLease(for scope: Scope, now: Date) throws -> Bool {
@@ -224,7 +273,13 @@ enum RemoteCommandUserAuthorization {
         // Reject preplanted plain timestamps and any payload we cannot authenticate
         // against the install token (boundary peers cannot forge without the secret).
         guard let expiresAt = try verifiedLeaseExpiry(rawPayload: raw, scope: scope) else {
-            try deleteKeychainItem(account: scope.rawValue, context: "preplant lease remove")
+            // Only delete if the Keychain value is still the rejected snapshot so a
+            // concurrent rebind to a valid lease is not wiped.
+            try deleteKeychainItemIfValueMatches(
+                account: scope.rawValue,
+                expected: raw,
+                context: "preplant lease remove"
+            )
             return nil
         }
         return expiresAt
@@ -277,24 +332,9 @@ enum RemoteCommandUserAuthorization {
             throw Error.storageFailed("lease payload is not UTF-8")
         }
 
-        let updateQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: RemoteCommandAuth.keychainService,
-            kSecAttrAccount as String: scope.rawValue,
-        ]
-        let updateAttrs: [String: Any] = [kSecValueData as String: data]
-        let updateStatus = SecItemUpdate(updateQuery as CFDictionary, updateAttrs as CFDictionary)
-        if updateStatus == errSecSuccess {
-            return
-        }
-        if updateStatus != errSecItemNotFound {
-            // Stale ACL from a previous ad-hoc binary — delete and recreate.
-            if updateStatus == errSecAuthFailed || updateStatus == errSecInteractionNotAllowed {
-                try deleteKeychainItem(account: scope.rawValue, context: "lease update rotate")
-            } else {
-                throw Error.storageFailed("lease keychain update failed (\(updateStatus))")
-            }
-        }
+        // Never SecItemUpdate in place: a peer-precreated item keeps its ACL across
+        // update. Delete any pre-existing account then recreate with our executable ACL.
+        try deleteKeychainItem(account: scope.rawValue, context: "lease replace before write")
 
         let access = try RemoteCommandAuth.makeExecutableScopedAccess(
             descriptor: "Caff remote CLI signing lease"
@@ -314,11 +354,13 @@ enum RemoteCommandUserAuthorization {
             status = SecItemAdd(addQuery as CFDictionary, nil)
         }
         if status == errSecDuplicateItem {
-            let retry = SecItemUpdate(updateQuery as CFDictionary, updateAttrs as CFDictionary)
-            guard retry == errSecSuccess else {
-                throw Error.storageFailed("lease keychain duplicate-update failed (\(retry))")
+            // Race: peer recreated between delete and add — remove again and retry once.
+            try deleteKeychainItem(account: scope.rawValue, context: "lease duplicate replace")
+            status = SecItemAdd(addQuery as CFDictionary, nil)
+            if status == errSecParam {
+                addQuery.removeValue(forKey: kSecAttrAccessible as String)
+                status = SecItemAdd(addQuery as CFDictionary, nil)
             }
-            return
         }
         guard status == errSecSuccess else {
             throw Error.storageFailed("lease keychain write failed (\(status))")
@@ -341,5 +383,41 @@ enum RemoteCommandUserAuthorization {
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw Error.storageFailed("\(context) delete failed (\(status))")
         }
+    }
+
+    private static func deleteKeychainItemIfValueMatches(
+        account: String,
+        expected: String,
+        context: String
+    ) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: RemoteCommandAuth.keychainService,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound {
+            return
+        }
+        if status == errSecAuthFailed || status == errSecInteractionNotAllowed {
+            try deleteKeychainItem(account: account, context: context)
+            return
+        }
+        guard status == errSecSuccess,
+              let data = item as? Data,
+              let raw = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        else {
+            return
+        }
+        guard RemoteCommandAuth.constantTimeEqualsPublic(raw, expected) else {
+            // Concurrent writer replaced the rejected snapshot with a new value.
+            return
+        }
+        try deleteKeychainItem(account: account, context: context)
     }
 }
