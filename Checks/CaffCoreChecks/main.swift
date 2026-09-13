@@ -359,6 +359,21 @@ do {
         check(error == .invalidToken, "remote auth should reject newline field repartition")
     }
 
+    let ticketDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("caff-core-checks-auth-ticket-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: ticketDirectory) }
+    let ticketAuth = RemoteCommandAuth(directoryURL: ticketDirectory)
+    let installToken = try ticketAuth.loadOrCreateToken()
+    let ticket = try ticketAuth.issueURLTicket()
+    check(!ticket.contains(installToken), "URL ticket must not embed the install token")
+    try ticketAuth.authenticate([RemoteCommandAuth.PayloadKey.ticket: ticket])
+    do {
+        try ticketAuth.authenticate([RemoteCommandAuth.PayloadKey.ticket: ticket])
+        failures.append("remote auth should reject replayed URL ticket")
+    } catch let error as RemoteCommandAuthError {
+        check(error == .invalidToken, "remote auth should report replayed URL ticket")
+    }
+
     let emptyTokenDirectory = FileManager.default.temporaryDirectory
         .appendingPathComponent("caff-core-checks-auth-empty-\(UUID().uuidString)", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: emptyTokenDirectory) }

@@ -21,9 +21,9 @@ private enum RemoteCommandApplyError: Error, CustomStringConvertible {
 
 extension AppDelegate {
     func registerRemoteControlHandlers() {
-        // Provision the install token at launch. External caff:// callers obtain the
-        // reusable secret via `caff remote-token` (user-authorized), not by reading
-        // the executable-scoped Keychain item from another process.
+        // Provision the install token at launch. External caff:// callers obtain a
+        // short-lived URL ticket via `caff remote-token` (user-authorized), not the
+        // durable Keychain secret (custom schemes are not exclusive).
         do {
             _ = try RemoteCommandAuth().loadOrCreateToken()
         } catch {

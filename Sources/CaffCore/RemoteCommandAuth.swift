@@ -22,10 +22,12 @@ public enum RemoteCommandAuthError: Error, CustomStringConvertible, Equatable, S
 
 /// Durable cache of accepted signed-payload nonces until their timestamps expire.
 ///
-/// Production persists the map in the login Keychain (same ACL as the install
-/// secret) so same-UID peers cannot truncate/delete Application Support state and
-/// replay a captured payload. Test/isolation directories keep a file store whose
-/// contents are HMAC-bound to the install token so rewrite/truncation fails closed.
+/// Production persists the map in the login Keychain under a private account derived
+/// from the install-token slot (same executable ACL), HMAC-bound to the install secret
+/// so peers cannot preplant or rewrite the public `accepted-nonces` account. Missing
+/// Keychain items fail closed after provisioning (deletion is treated as rollback, not
+/// first use). Test/isolation directories keep a file store whose contents are
+/// HMAC-bound to the install token so rewrite/truncation fails closed.
 private final class AcceptedNonceStore: @unchecked Sendable {
     private enum Backend {
         case file(URL)
@@ -37,14 +39,21 @@ private final class AcceptedNonceStore: @unchecked Sendable {
 
     private let backend: Backend
     private let lockFileURL: URL
+    private let keychainAccountProvider: (() throws -> String)?
 
-    init(directoryURL: URL, usesKeychain: Bool) {
+    init(
+        directoryURL: URL,
+        usesKeychain: Bool,
+        keychainAccountProvider: (() throws -> String)? = nil
+    ) {
         if usesKeychain {
             self.backend = .keychain
+            self.keychainAccountProvider = keychainAccountProvider
         } else {
             self.backend = .file(
                 directoryURL.appendingPathComponent(RemoteCommandAuth.nonceFileName, isDirectory: false)
             )
+            self.keychainAccountProvider = nil
         }
         self.lockFileURL = directoryURL.appendingPathComponent(
             RemoteCommandAuth.nonceLockFileName,
@@ -70,6 +79,41 @@ private final class AcceptedNonceStore: @unchecked Sendable {
         }
     }
 
+    /// Creates an empty HMAC-bound nonce map during token provisioning.
+    func provisionEmpty(integrityKey: String) throws {
+        Self.processLock.lock()
+        defer { Self.processLock.unlock() }
+        try withCrossProcessLock {
+            try saveMap([:], integrityKey: integrityKey)
+        }
+    }
+
+    /// Ensures a valid HMAC-bound nonce map exists without wiping a healthy cache.
+    func ensureProvisioned(integrityKey: String) throws {
+        Self.processLock.lock()
+        defer { Self.processLock.unlock() }
+        try withCrossProcessLock {
+            do {
+                _ = try loadMap(integrityKey: integrityKey)
+            } catch {
+                if case .keychain = backend {
+                    let account = try resolveKeychainAccount()
+                    let status = SecItemDelete([
+                        kSecClass as String: kSecClassGenericPassword,
+                        kSecAttrService as String: RemoteCommandAuth.keychainService,
+                        kSecAttrAccount as String: account,
+                    ] as CFDictionary)
+                    guard status == errSecSuccess || status == errSecItemNotFound else {
+                        throw RemoteCommandAuthError.storageFailed(
+                            "nonce keychain remint delete failed (\(status))"
+                        )
+                    }
+                }
+                try saveMap([:], integrityKey: integrityKey)
+            }
+        }
+    }
+
     private func withCrossProcessLock<T>(_ body: () throws -> T) throws -> T {
         try FileManager.default.createDirectory(
             at: lockFileURL.deletingLastPathComponent(),
@@ -92,7 +136,7 @@ private final class AcceptedNonceStore: @unchecked Sendable {
         case let .file(fileURL):
             return try loadFileMap(fileURL: fileURL, integrityKey: integrityKey)
         case .keychain:
-            return try loadKeychainMap()
+            return try loadKeychainMap(integrityKey: integrityKey)
         }
     }
 
@@ -101,7 +145,7 @@ private final class AcceptedNonceStore: @unchecked Sendable {
         case let .file(fileURL):
             try saveFileMap(map, fileURL: fileURL, integrityKey: integrityKey)
         case .keychain:
-            try saveKeychainMap(map)
+            try saveKeychainMap(map, integrityKey: integrityKey)
         }
     }
 
@@ -178,18 +222,30 @@ private final class AcceptedNonceStore: @unchecked Sendable {
         }
     }
 
-    private func loadKeychainMap() throws -> [String: TimeInterval] {
+    private func resolveKeychainAccount() throws -> String {
+        guard let keychainAccountProvider else {
+            throw RemoteCommandAuthError.storageFailed("nonce keychain account provider missing")
+        }
+        return try keychainAccountProvider()
+    }
+
+    private func loadKeychainMap(integrityKey: String) throws -> [String: TimeInterval] {
+        let account = try resolveKeychainAccount()
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: RemoteCommandAuth.keychainService,
-            kSecAttrAccount as String: RemoteCommandAuth.keychainNonceAccount,
+            kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         if status == errSecItemNotFound {
-            return [:]
+            // After provisioning, a missing item is treated as rollback (peer delete),
+            // not first use — otherwise captured payloads become replayable again.
+            throw RemoteCommandAuthError.storageFailed(
+                "nonce keychain item missing (possible rollback)"
+            )
         }
         guard status == errSecSuccess else {
             throw RemoteCommandAuthError.storageFailed("nonce keychain read failed (\(status))")
@@ -200,11 +256,31 @@ private final class AcceptedNonceStore: @unchecked Sendable {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw RemoteCommandAuthError.storageFailed("nonce keychain JSON is invalid")
         }
-        return Self.decodeNonceMap(root)
+        guard let mac = root["mac"] as? String, !mac.isEmpty else {
+            throw RemoteCommandAuthError.storageFailed("nonce keychain item missing integrity mac")
+        }
+        let noncesObject = root["nonces"] as? [String: Any] ?? [:]
+        let map = Self.decodeNonceMap(noncesObject)
+        let expected = RemoteCommandAuth.hmacHex(
+            key: integrityKey,
+            message: Self.canonicalNonceMessage(map)
+        )
+        guard RemoteCommandAuth.constantTimeEquals(mac, expected) else {
+            throw RemoteCommandAuthError.storageFailed("nonce keychain integrity check failed")
+        }
+        return map
     }
 
-    private func saveKeychainMap(_ map: [String: TimeInterval]) throws {
-        let payload = map.mapValues { $0 as Any }
+    private func saveKeychainMap(_ map: [String: TimeInterval], integrityKey: String) throws {
+        let account = try resolveKeychainAccount()
+        let mac = RemoteCommandAuth.hmacHex(
+            key: integrityKey,
+            message: Self.canonicalNonceMessage(map)
+        )
+        let payload: [String: Any] = [
+            "nonces": map.mapValues { $0 as Any },
+            "mac": mac,
+        ]
         let data: Data
         do {
             data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
@@ -217,7 +293,7 @@ private final class AcceptedNonceStore: @unchecked Sendable {
         let updateQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: RemoteCommandAuth.keychainService,
-            kSecAttrAccount as String: RemoteCommandAuth.keychainNonceAccount,
+            kSecAttrAccount as String: account,
         ]
         let updateAttrs: [String: Any] = [
             kSecValueData as String: data,
@@ -230,15 +306,13 @@ private final class AcceptedNonceStore: @unchecked Sendable {
             throw RemoteCommandAuthError.storageFailed("nonce keychain update failed (\(updateStatus))")
         }
 
-        // First write — add with the same executable-scoped ACL as the install token.
-        // Never delete-then-add: concurrent creators must not wipe each other's item.
         let access = try RemoteCommandAuth.makeExecutableScopedAccess(
             descriptor: "Caff remote command nonce cache"
         )
         var addQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: RemoteCommandAuth.keychainService,
-            kSecAttrAccount as String: RemoteCommandAuth.keychainNonceAccount,
+            kSecAttrAccount as String: account,
             kSecAttrLabel as String: "Caff remote command nonce cache",
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
             kSecAttrAccess as String: access,
@@ -286,13 +360,15 @@ private final class AcceptedNonceStore: @unchecked Sendable {
 ///
 /// Production installs store the secret and accepted-nonce map in the login Keychain
 /// with an ACL limited to this executable (code-identity gate), not as same-UID-writable
-/// files under Application Support. Explicit `directoryURL` (tests) keeps the legacy
-/// file store with HMAC-bound nonce persistence. CLI/DNC callers never broadcast the
-/// reusable secret; they attach a short-lived HMAC instead. URL callers may still pass
-/// `token=` after obtaining it via the authorized `caff remote-token` command (Keychain
-/// ACL prevents silent in-process reads by other executables).
+/// files under Application Support. The private Keychain account slot selector also lives
+/// in Keychain (never an Application Support file). Explicit `directoryURL` (tests) keeps
+/// the legacy file store with HMAC-bound nonce persistence. CLI/DNC callers never
+/// broadcast the reusable secret; they attach a short-lived HMAC instead. URL callers use
+/// a short-lived single-use `ticket=` from `caff remote-token` — the durable secret must
+/// not travel through non-exclusive custom URL schemes.
 public struct RemoteCommandAuth: Sendable {
     public static let tokenFileName = "remote-command.token"
+    /// Legacy Application Support slot path — scrubbed only, never trusted as provenance.
     public static let keychainSlotFileName = "remote-command.keychain-slot"
     public static let nonceFileName = "remote-command.nonces"
     public static let nonceLockFileName = "remote-command.nonces.lock"
@@ -301,6 +377,9 @@ public struct RemoteCommandAuth: Sendable {
     public static let keychainService = "local.caff.remote-command"
     /// Legacy public account name. Never adopted for reads — only scrubbed on bootstrap.
     public static let keychainAccount = "install-token"
+    /// Keychain account that stores the private install-token slot name.
+    public static let keychainSlotAccount = "keychain-slot"
+    /// Legacy public nonce account. Never adopted — only scrubbed on bootstrap.
     public static let keychainNonceAccount = "accepted-nonces"
     /// Prefix baked into secrets Caff mints. Format only — not a trust/provenance signal.
     /// Provenance comes from an exclusively created private Keychain account slot.
@@ -308,6 +387,7 @@ public struct RemoteCommandAuth: Sendable {
 
     public enum PayloadKey {
         public static let token = "token"
+        public static let ticket = "ticket"
         public static let mac = "mac"
         public static let nonce = "nonce"
         public static let timestamp = "ts"
@@ -329,7 +409,14 @@ public struct RemoteCommandAuth: Sendable {
                 ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             self.directoryURL = supportRoot.appendingPathComponent("Caff", isDirectory: true)
         }
-        self.nonceStore = AcceptedNonceStore(directoryURL: self.directoryURL, usesKeychain: self.usesKeychain)
+        let supportDirectory = self.directoryURL
+        self.nonceStore = AcceptedNonceStore(
+            directoryURL: supportDirectory,
+            usesKeychain: self.usesKeychain,
+            keychainAccountProvider: self.usesKeychain
+                ? { try RemoteCommandAuth.privateNonceAccountNameFromKeychain() }
+                : nil
+        )
     }
 
     public var tokenFileURL: URL {
@@ -367,19 +454,84 @@ public struct RemoteCommandAuth: Sendable {
     /// Authenticates a remote-control payload.
     ///
     /// Prefers a signed MAC (`mac`/`nonce`/`ts`) so DistributedNotificationCenter
-    /// never needs the reusable bearer token. Falls back to `token=` for URL callers.
+    /// never needs the reusable bearer token. URL callers use a short-lived
+    /// single-use `ticket=` — production Keychain mode rejects durable `token=`
+    /// so the install secret never enters a non-exclusive custom URL scheme.
     public func authenticate(_ userInfo: [String: String]) throws {
         if let mac = userInfo[PayloadKey.mac], !mac.isEmpty {
             try verifySignedPayload(userInfo)
             return
         }
+        if let ticket = userInfo[PayloadKey.ticket], !ticket.isEmpty {
+            try verifyURLTicket(ticket)
+            return
+        }
+        if usesKeychain {
+            throw RemoteCommandAuthError.missingToken
+        }
         try verify(userInfo[PayloadKey.token])
+    }
+
+    /// Issues a short-lived, single-use URL ticket derived from the install secret.
+    ///
+    /// The durable Keychain secret never appears in the ticket string — only a
+    /// MAC over `(purpose, ts, nonce)` that is consumed like a signed DNC payload.
+    public func issueURLTicket() throws -> String {
+        let secret = try loadOrCreateToken()
+        let nonce = UUID().uuidString
+        let timestamp = String(Int(now().timeIntervalSince1970))
+        let mac = Self.hmacHex(
+            key: secret,
+            message: Self.canonicalMessage([
+                "purpose": "url-ticket",
+                PayloadKey.nonce: nonce,
+                PayloadKey.timestamp: timestamp,
+            ])
+        )
+        return "v1:\(timestamp):\(nonce):\(mac)"
+    }
+
+    /// Verifies and consumes a URL ticket issued by `issueURLTicket()`.
+    public func verifyURLTicket(_ ticket: String) throws {
+        let parts = ticket.split(separator: ":", maxSplits: 3, omittingEmptySubsequences: false)
+        guard parts.count == 4, parts[0] == "v1" else {
+            throw RemoteCommandAuthError.invalidToken
+        }
+        let tsRaw = String(parts[1])
+        let nonce = String(parts[2])
+        let mac = String(parts[3])
+        guard let timestamp = TimeInterval(tsRaw), !nonce.isEmpty, !mac.isEmpty else {
+            throw RemoteCommandAuthError.invalidToken
+        }
+        let current = now().timeIntervalSince1970
+        guard abs(current - timestamp) <= Self.signatureMaxAgeSeconds else {
+            throw RemoteCommandAuthError.invalidToken
+        }
+
+        let secret = try loadOrCreateToken()
+        let expected = Self.hmacHex(
+            key: secret,
+            message: Self.canonicalMessage([
+                "purpose": "url-ticket",
+                PayloadKey.nonce: nonce,
+                PayloadKey.timestamp: tsRaw,
+            ])
+        )
+        guard Self.constantTimeEquals(mac, expected) else {
+            throw RemoteCommandAuthError.invalidToken
+        }
+
+        let expiresAt = timestamp + Self.signatureMaxAgeSeconds
+        guard try nonceStore.consume(nonce, expiresAt: expiresAt, now: current, integrityKey: secret) else {
+            throw RemoteCommandAuthError.invalidToken
+        }
     }
 
     /// Signs `userInfo` with a short-lived HMAC, never embedding the reusable token.
     public func sign(_ userInfo: [String: String]) throws -> [String: String] {
         var payload = userInfo
         payload.removeValue(forKey: PayloadKey.token)
+        payload.removeValue(forKey: PayloadKey.ticket)
         payload.removeValue(forKey: PayloadKey.mac)
         payload[PayloadKey.nonce] = UUID().uuidString
         payload[PayloadKey.timestamp] = String(Int(now().timeIntervalSince1970))
@@ -411,6 +563,7 @@ public struct RemoteCommandAuth: Sendable {
         var unsigned = userInfo
         unsigned.removeValue(forKey: PayloadKey.mac)
         unsigned.removeValue(forKey: PayloadKey.token)
+        unsigned.removeValue(forKey: PayloadKey.ticket)
         let expected = Self.hmacHex(key: secret, message: Self.canonicalMessage(unsigned))
         guard Self.constantTimeEquals(mac, expected) else {
             throw RemoteCommandAuthError.invalidToken
@@ -427,39 +580,51 @@ public struct RemoteCommandAuth: Sendable {
 
     private func loadOrCreateKeychainToken() throws -> String {
         try removeLegacyTokenFileIfPresent()
-        // Always scrub the legacy public account. Same-UID peers can preplant
-        // `caff-v1:` under that well-known name; we never adopt it.
+        try scrubLegacySlotFileIfPresent()
+        // Always scrub legacy public accounts. Same-UID peers can preplant under
+        // those well-known names; we never adopt them.
         try deleteKeychainAccount(Self.keychainAccount, context: "legacy public token scrub")
+        try deleteKeychainAccount(Self.keychainNonceAccount, context: "legacy public nonce scrub")
 
         let slot = try loadOrCreateKeychainSlotAccount()
+        let nonceAccount = Self.nonceAccount(forSlot: slot.account)
         if !slot.created {
             if let existing = try readKeychainToken(account: slot.account),
                Self.isProvisionedToken(existing) {
+                // Ensure nonce store exists for this slot (upgrade path).
+                try ensureNonceStore(forToken: existing, nonceAccount: nonceAccount)
                 return existing
             }
-            // Slot file exists but token missing/corrupt — remint under the same slot.
+            // Slot exists but token missing/corrupt — remint under the same slot.
             if try readKeychainToken(account: slot.account) != nil {
                 try deleteKeychainAccount(slot.account, context: "corrupt slot token remove")
-                try deleteKeychainAccount(Self.keychainNonceAccount, context: "corrupt slot nonce remove")
             }
+            try deleteKeychainAccount(nonceAccount, context: "corrupt slot nonce remove")
         } else {
             // Brand-new private account name: peers could not have addressed it before
             // this exclusive create. Clear any stale nonce map before minting.
-            try deleteKeychainAccount(Self.keychainNonceAccount, context: "fresh slot nonce scrub")
+            try deleteKeychainAccount(nonceAccount, context: "fresh slot nonce scrub")
         }
 
         let token = Self.provisionedTokenPrefix + (try Self.generateToken())
         do {
             try writeKeychainToken(token, account: slot.account)
+            try nonceStore.provisionEmpty(integrityKey: token)
             return token
         } catch {
             // Lost a create race — return the winner's provisioned secret, never ours.
             if let existing = try readKeychainToken(account: slot.account),
                Self.isProvisionedToken(existing) {
+                try ensureNonceStore(forToken: existing, nonceAccount: nonceAccount)
                 return existing
             }
             throw error
         }
+    }
+
+    private func ensureNonceStore(forToken token: String, nonceAccount: String) throws {
+        _ = nonceAccount
+        try nonceStore.ensureProvisioned(integrityKey: token)
     }
 
     private static func isProvisionedToken(_ token: String) -> Bool {
@@ -467,53 +632,125 @@ public struct RemoteCommandAuth: Sendable {
             && token.count == provisionedTokenPrefix.count + tokenByteCount * 2
     }
 
-    /// Private Keychain account slot. Created exclusively so peers cannot target the
-    /// public `install-token` name; the slot id lives under Application Support.
+    private static func nonceAccount(forSlot slotAccount: String) -> String {
+        "nonces.\(slotAccount)"
+    }
+
+    fileprivate static func privateNonceAccountNameFromKeychain() throws -> String {
+        guard let slot = try readKeychainSlotAccountValue() else {
+            throw RemoteCommandAuthError.storageFailed("keychain slot missing while resolving nonce account")
+        }
+        return nonceAccount(forSlot: slot)
+    }
+
+    /// Private Keychain account slot. The selector itself lives in Keychain under
+    /// `keychainSlotAccount` so same-UID peers cannot redirect via an Application
+    /// Support file. Legacy slot files are scrubbed and never trusted.
     private func loadOrCreateKeychainSlotAccount() throws -> (account: String, created: Bool) {
-        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-        let slotURL = directoryURL.appendingPathComponent(Self.keychainSlotFileName, isDirectory: false)
-        let path = slotURL.path
+        try scrubLegacySlotFileIfPresent()
+
+        if let existing = try Self.readKeychainSlotAccountValue() {
+            if existing.hasPrefix("install-token-"), existing.count > "install-token-".count {
+                return (existing, false)
+            }
+            try deleteKeychainAccount(Self.keychainSlotAccount, context: "corrupt slot pointer remove")
+        }
 
         let account = "install-token-\(try Self.generateToken())"
+        do {
+            try writeKeychainSlotAccount(account)
+            return (account, true)
+        } catch {
+            if let existing = try Self.readKeychainSlotAccountValue(),
+               existing.hasPrefix("install-token-"),
+               existing.count > "install-token-".count {
+                return (existing, false)
+            }
+            throw error
+        }
+    }
+
+    private static func readKeychainSlotAccountValue() throws -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: keychainSlotAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound {
+            return nil
+        }
+        if status == errSecAuthFailed || status == errSecInteractionNotAllowed {
+            // Ad-hoc upgrade lost ACL recognition — drop pointer so we remint.
+            let delete = SecItemDelete([
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: keychainService,
+                kSecAttrAccount as String: keychainSlotAccount,
+            ] as CFDictionary)
+            guard delete == errSecSuccess || delete == errSecItemNotFound else {
+                throw RemoteCommandAuthError.storageFailed("slot pointer ACL rotate failed (\(delete))")
+            }
+            return nil
+        }
+        guard status == errSecSuccess else {
+            throw RemoteCommandAuthError.storageFailed("keychain slot read failed (\(status))")
+        }
+        guard
+            let data = item as? Data,
+            let account = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            !account.isEmpty
+        else {
+            throw RemoteCommandAuthError.storageFailed("keychain slot is empty or not UTF-8")
+        }
+        return account
+    }
+
+    private func writeKeychainSlotAccount(_ account: String) throws {
         guard let data = account.data(using: .utf8) else {
             throw RemoteCommandAuthError.storageFailed("slot account is not UTF-8")
         }
-
-        let fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
-        if fd >= 0 {
-            defer { close(fd) }
-            let written = data.withUnsafeBytes { buffer -> Int in
-                guard let base = buffer.baseAddress else { return -1 }
-                return write(fd, base, buffer.count)
-            }
-            guard written == data.count else {
-                unlink(path)
-                throw RemoteCommandAuthError.storageFailed("short write while creating keychain slot")
-            }
-            if fsync(fd) != 0 {
-                let code = errno
-                unlink(path)
-                throw RemoteCommandAuthError.storageFailed("keychain slot fsync failed (\(code))")
-            }
-            return (account, true)
+        let access = try Self.makeExecutableScopedAccess(descriptor: "Caff remote command keychain slot")
+        var addQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.keychainService,
+            kSecAttrAccount as String: Self.keychainSlotAccount,
+            kSecAttrLabel as String: "Caff remote command keychain slot",
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecAttrAccess as String: access,
+            kSecValueData as String: data,
+        ]
+        var status = SecItemAdd(addQuery as CFDictionary, nil)
+        if status == errSecParam {
+            addQuery.removeValue(forKey: kSecAttrAccessible as String)
+            status = SecItemAdd(addQuery as CFDictionary, nil)
         }
-
-        if errno != EEXIST {
-            throw RemoteCommandAuthError.storageFailed("keychain slot open failed (\(errno))")
+        if status == errSecDuplicateItem {
+            throw RemoteCommandAuthError.storageFailed("keychain slot already exists")
         }
+        guard status == errSecSuccess else {
+            throw RemoteCommandAuthError.storageFailed("keychain slot write failed (\(status))")
+        }
+    }
 
+    private func scrubLegacySlotFileIfPresent() throws {
+        let slotURL = directoryURL.appendingPathComponent(Self.keychainSlotFileName, isDirectory: false)
+        guard FileManager.default.fileExists(atPath: slotURL.path) else {
+            return
+        }
         do {
-            let existing = try String(contentsOf: slotURL, encoding: .utf8)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard existing.hasPrefix("install-token-"), existing.count > "install-token-".count else {
-                throw RemoteCommandAuthError.storageFailed("keychain slot file is corrupt")
-            }
-            return (existing, false)
-        } catch let error as RemoteCommandAuthError {
-            throw error
+            try FileManager.default.removeItem(at: slotURL)
+        } catch CocoaError.fileNoSuchFile {
+            return
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain
+            && error.code == NSFileNoSuchFileError {
+            return
         } catch {
             throw RemoteCommandAuthError.storageFailed(
-                "failed to read keychain slot: \(error.localizedDescription)"
+                "failed to remove legacy keychain slot file: \(error.localizedDescription)"
             )
         }
     }
@@ -536,7 +773,8 @@ public struct RemoteCommandAuth: Sendable {
         // interactive Keychain prompt that breaks unattended CLI/hooks.
         if status == errSecAuthFailed || status == errSecInteractionNotAllowed {
             try deleteKeychainAccount(account, context: "token ACL rotate")
-            try deleteKeychainAccount(Self.keychainNonceAccount, context: "nonce ACL rotate")
+            try deleteKeychainAccount(Self.nonceAccount(forSlot: account), context: "nonce ACL rotate")
+            try deleteKeychainAccount(Self.keychainSlotAccount, context: "slot ACL rotate")
             return nil
         }
         guard status == errSecSuccess else {

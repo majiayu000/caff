@@ -187,7 +187,12 @@ enum RemoteCommandUserAuthorization {
         }
         let expiryRaw = String(body[..<split])
         let mac = String(body[body.index(after: split)...])
-        guard let expiresAt = TimeInterval(expiryRaw), !mac.isEmpty else {
+        guard let expiresAt = TimeInterval(expiryRaw),
+              expiresAt.isFinite,
+              expiresAt >= Double(Int.min),
+              expiresAt <= Double(Int.max),
+              !mac.isEmpty
+        else {
             return nil
         }
 
@@ -201,6 +206,12 @@ enum RemoteCommandUserAuthorization {
 
     private static func writeLease(scope: Scope, expiresAt: TimeInterval) throws {
         let token = try RemoteCommandAuth().loadOrCreateToken()
+        guard expiresAt.isFinite,
+              expiresAt >= Double(Int.min),
+              expiresAt <= Double(Int.max)
+        else {
+            throw Error.storageFailed("lease expiry is not a finite Int-representable timestamp")
+        }
         let expirySeconds = Int(expiresAt)
         let mac = leaseMAC(token: token, scope: scope, expiresAt: expirySeconds)
         let payload = "\(leasePayloadPrefix)\(expirySeconds):\(mac)"

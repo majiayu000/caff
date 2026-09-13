@@ -14,6 +14,7 @@ enum RemoteCommandBridge {
         static let agentSource = "agentSource"
         static let cooldownSeconds = "cooldownSeconds"
         static let token = RemoteCommandAuth.PayloadKey.token
+        static let ticket = RemoteCommandAuth.PayloadKey.ticket
         static let mac = RemoteCommandAuth.PayloadKey.mac
         static let nonce = RemoteCommandAuth.PayloadKey.nonce
         static let timestamp = RemoteCommandAuth.PayloadKey.timestamp

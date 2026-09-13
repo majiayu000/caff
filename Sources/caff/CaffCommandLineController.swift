@@ -85,18 +85,18 @@ final class CaffCommandLineController {
             print("remote-control signing authorized")
         case "remote-token":
             try rejectUnexpectedOptions(rest)
-            // Token disclosure must not ride an install-hooks / signing lease — require
-            // fresh user presence so a temporary signing grant cannot become a durable
-            // reusable secret exfiltration path.
+            // Issue a short-lived single-use URL ticket — never print the durable
+            // install secret (custom URL schemes are not an exclusive channel).
+            // Fresh user presence is required; signing/hook leases must not mint tickets.
             do {
                 try RemoteCommandUserAuthorization.requireFreshAuthorization(
-                    reason: "Authorize Caff to reveal the remote-control install token"
+                    reason: "Authorize Caff to issue a remote-control URL ticket"
                 )
             } catch let error as RemoteCommandUserAuthorization.Error {
                 throw CaffCommandLineError.authorizationRequired(error.description)
             }
-            let token = try RemoteCommandAuth().loadOrCreateToken()
-            print(token)
+            let ticket = try RemoteCommandAuth().issueURLTicket()
+            print(ticket)
         case "install-hooks":
             let options = try parseHookOptions(rest, allowCooldown: true)
             // Explicit user action: mint a longer agent-touch-only lease so hooks can
@@ -106,12 +106,17 @@ final class CaffCommandLineController {
                 reason: "Authorize Caff agent-touch hooks to sign remote commands",
                 leaseSeconds: RemoteCommandUserAuthorization.hookLeaseSeconds
             )
+            let manager = hookManager(cooldownSeconds: options.cooldownSeconds)
             do {
-                let changes = try hookManager(cooldownSeconds: options.cooldownSeconds).install(targets: options.targets)
+                let changes = try manager.install(targets: options.targets)
                 printHookChanges(changes)
             } catch {
-                // Roll back the long-lived lease if hook installation fails.
-                try? RemoteCommandUserAuthorization.revokeLease(scope: .agentTouch)
+                // Partial installs are not atomic across targets. Only revoke the
+                // agent-touch lease when no managed hooks remain; otherwise already-
+                // written hooks would lose unattended signing while still installed.
+                if (try? manager.hasManagedHooks()) != true {
+                    try? RemoteCommandUserAuthorization.revokeLease(scope: .agentTouch)
+                }
                 throw error
             }
         case "remove-hooks":

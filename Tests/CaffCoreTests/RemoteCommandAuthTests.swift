@@ -262,3 +262,29 @@ private func temporaryAuthDirectory() throws -> URL {
     #expect(loaded == published)
     #expect(try String(contentsOf: auth.tokenFileURL, encoding: .utf8) == published)
 }
+
+@Test func remoteCommandAuthIssuesSingleUseURLTickets() throws {
+    let directory = try temporaryAuthDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let fixedNow = Date(timeIntervalSince1970: 1_700_000_400)
+    let auth = RemoteCommandAuth(directoryURL: directory, now: { fixedNow })
+    let ticket = try auth.issueURLTicket()
+
+    try auth.authenticate([RemoteCommandAuth.PayloadKey.ticket: ticket])
+    let replayed = #expect(throws: RemoteCommandAuthError.self) {
+        try auth.authenticate([RemoteCommandAuth.PayloadKey.ticket: ticket])
+    }
+    #expect(replayed == .invalidToken)
+}
+
+@Test func remoteCommandAuthURLTicketDoesNotEmbedInstallToken() throws {
+    let directory = try temporaryAuthDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let auth = RemoteCommandAuth(directoryURL: directory)
+    let token = try auth.loadOrCreateToken()
+    let ticket = try auth.issueURLTicket()
+    #expect(!ticket.contains(token))
+    #expect(ticket.hasPrefix("v1:"))
+}

@@ -9,11 +9,16 @@ extension AppDelegate {
                 reason: "Authorize Caff agent-touch hooks to sign remote commands",
                 leaseSeconds: RemoteCommandUserAuthorization.hookLeaseSeconds
             )
+            let manager = hookManager()
             let changes: [AgentHookChange]
             do {
-                changes = try hookManager().install()
+                changes = try manager.install()
             } catch {
-                try? RemoteCommandUserAuthorization.revokeLease(scope: .agentTouch)
+                // Partial installs are not atomic across targets. Only revoke when
+                // no managed hooks remain so surviving hooks keep their lease.
+                if (try? manager.hasManagedHooks()) != true {
+                    try? RemoteCommandUserAuthorization.revokeLease(scope: .agentTouch)
+                }
                 throw error
             }
             hookManagementStatus = .updated(targets: updatedHookTargets(changes))
