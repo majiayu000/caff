@@ -28,7 +28,7 @@ public enum RemoteCommandAuthError: Error, CustomStringConvertible, Equatable, S
 /// Keychain items fail closed after provisioning (deletion is treated as rollback, not
 /// first use). Test/isolation directories keep a file store whose contents are
 /// HMAC-bound to the install token so rewrite/truncation fails closed.
-private final class AcceptedNonceStore: @unchecked Sendable {
+public final class AcceptedNonceStore: @unchecked Sendable {
     private enum Backend {
         case file(URL)
         case keychain
@@ -42,7 +42,7 @@ private final class AcceptedNonceStore: @unchecked Sendable {
     private let lockFileURL: URL
     private let keychainAccountProvider: (() throws -> String)?
 
-    init(
+    public init(
         directoryURL: URL,
         usesKeychain: Bool,
         keychainAccountProvider: (() throws -> String)? = nil
@@ -63,7 +63,7 @@ private final class AcceptedNonceStore: @unchecked Sendable {
     }
 
     /// Returns `true` when `nonce` is newly recorded; `false` when it was already consumed.
-    func consume(_ nonce: String, expiresAt: TimeInterval, now: TimeInterval, integrityKey: String) throws -> Bool {
+    public func consume(_ nonce: String, expiresAt: TimeInterval, now: TimeInterval, integrityKey: String) throws -> Bool {
         Self.processLock.lock()
         defer { Self.processLock.unlock() }
 
@@ -81,11 +81,32 @@ private final class AcceptedNonceStore: @unchecked Sendable {
     }
 
     /// Creates an empty HMAC-bound nonce map during token provisioning.
-    func provisionEmpty(integrityKey: String) throws {
+    public func provisionEmpty(integrityKey: String) throws {
         Self.processLock.lock()
         defer { Self.processLock.unlock() }
         try withCrossProcessLock {
             try saveMap([:], integrityKey: integrityKey)
+        }
+    }
+
+    /// Best-effort snapshot of accepted nonces for remint migration.
+    public func exportMap(integrityKey: String) throws -> [String: TimeInterval] {
+        Self.processLock.lock()
+        defer { Self.processLock.unlock() }
+        return try withCrossProcessLock {
+            try loadMap(integrityKey: integrityKey)
+        }
+    }
+
+    /// Publishes `map` under `integrityKey`, pruning entries that already expired.
+    ///
+    /// Used when a lease-validated remint retires the prior secret so replay state
+    /// survives rotation (retired MACs still check the live map via the new key).
+    public func provisionMap(_ map: [String: TimeInterval], integrityKey: String, now: TimeInterval) throws {
+        Self.processLock.lock()
+        defer { Self.processLock.unlock() }
+        try withCrossProcessLock {
+            try saveMap(map.filter { $0.value > now }, integrityKey: integrityKey)
         }
     }
 
@@ -666,7 +687,8 @@ public struct RemoteCommandAuth: Sendable {
         }
 
         let expiresAt = timestamp + Self.signatureMaxAgeSeconds
-        // Prefer the live secret's nonce map; fall back to the matched key.
+        // Live secret owns the rebound nonce map after remint migration; fall back
+        // to the matched key only if the live candidate list is somehow empty.
         let integrityKey = candidates.first ?? matched
         guard try nonceStore.consume(nonce, expiresAt: expiresAt, now: current, integrityKey: integrityKey) else {
             throw RemoteCommandAuthError.invalidToken
@@ -809,6 +831,39 @@ public struct RemoteCommandAuth: Sendable {
         nonceAccount: String,
         claimAccount: String
     ) throws -> String {
+        // Nonces captured before a lease-validated remint so replay state is rebound
+        // under the replacement secret instead of wiped (retired MACs still consult
+        // the live map via integrityKey = candidates.first).
+        var migratedNonces: [String: TimeInterval]?
+
+        func captureNonceMigration(from token: String) {
+            guard migratedNonces == nil else { return }
+            migratedNonces = try? nonceStore.exportMap(integrityKey: token)
+        }
+
+        func rotateRemintingToken(
+            _ token: String,
+            preserveInFlightSignatures: Bool,
+            context: String
+        ) throws {
+            if preserveInFlightSignatures {
+                captureNonceMigration(from: token)
+            }
+            try deleteKeychainTokenIfMatches(
+                account: slot.account,
+                expected: token,
+                context: context,
+                retirePrior: preserveInFlightSignatures
+            )
+            try deleteKeychainNonceIfTokenGoneOrMatches(
+                nonceAccount: nonceAccount,
+                tokenAccount: slot.account,
+                expectedToken: token,
+                context: "\(context) nonce"
+            )
+            try scrubMintSeal(forClaimAccount: claimAccount, context: "\(context) mint seal")
+        }
+
         if !slot.created {
             let observed = try readKeychainToken(account: slot.account)
             if let existing = observed, Self.isProvisionedToken(existing) {
@@ -819,37 +874,33 @@ public struct RemoteCommandAuth: Sendable {
                         return existing
                     } catch {
                         // Nonce map missing/corrupt under an otherwise adopted token.
-                        // Rotate the secret and require a fresh lease rebind via presence.
+                        // Rotate without retiring: replay state is already gone, and
+                        // accepting retired MACs against an empty map would allow replay.
                         Self.noteRecentUserPresence()
                         try deleteKeychainTokenIfMatches(
                             account: slot.account,
                             expected: existing,
-                            context: "established token nonce-store remint"
+                            context: "established token nonce-store remint",
+                            retirePrior: false
                         )
                         try deleteKeychainAccount(claimAccount, context: "claim scrub on nonce remint")
                         try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub on nonce remint")
                     }
-                case .remint:
-                    // First Caff process to claim a pre-existing public pointer — discard
-                    // any peer-chosen secret before minting under this slot.
-                    try deleteKeychainTokenIfMatches(
-                        account: slot.account,
-                        expected: existing,
-                        context: "preplant slot token rotate"
+                case .remint(let preserveInFlightSignatures):
+                    try rotateRemintingToken(
+                        existing,
+                        preserveInFlightSignatures: preserveInFlightSignatures,
+                        context: preserveInFlightSignatures
+                            ? "lease-validated slot token rotate"
+                            : "preplant slot token rotate"
                     )
-                    try deleteKeychainNonceIfTokenGoneOrMatches(
-                        nonceAccount: nonceAccount,
-                        tokenAccount: slot.account,
-                        expectedToken: existing,
-                        context: "preplant slot nonce rotate"
-                    )
-                    try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub on preplant rotate")
                 }
             } else if let corrupt = observed {
                 try deleteKeychainTokenIfMatches(
                     account: slot.account,
                     expected: corrupt,
-                    context: "corrupt slot token remove"
+                    context: "corrupt slot token remove",
+                    retirePrior: false
                 )
                 try deleteKeychainAccount(claimAccount, context: "claim scrub on corrupt token")
                 try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub on corrupt token")
@@ -869,24 +920,20 @@ public struct RemoteCommandAuth: Sendable {
                         try deleteKeychainTokenIfMatches(
                             account: slot.account,
                             expected: winner,
-                            context: "winner token nonce-store remint"
+                            context: "winner token nonce-store remint",
+                            retirePrior: false
                         )
                         try deleteKeychainAccount(claimAccount, context: "claim scrub on winner remint")
                         try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub on winner remint")
                     }
-                case .remint:
-                    try deleteKeychainTokenIfMatches(
-                        account: slot.account,
-                        expected: winner,
-                        context: "winner preplant token rotate"
+                case .remint(let preserveInFlightSignatures):
+                    try rotateRemintingToken(
+                        winner,
+                        preserveInFlightSignatures: preserveInFlightSignatures,
+                        context: preserveInFlightSignatures
+                            ? "lease-validated winner token rotate"
+                            : "winner preplant token rotate"
                     )
-                    try deleteKeychainNonceIfTokenGoneOrMatches(
-                        nonceAccount: nonceAccount,
-                        tokenAccount: slot.account,
-                        expectedToken: winner,
-                        context: "winner preplant nonce rotate"
-                    )
-                    try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub on winner rotate")
                 }
             }
 
@@ -899,21 +946,16 @@ public struct RemoteCommandAuth: Sendable {
                 case .adopt:
                     try ensureNonceStore(forToken: leftover, nonceAccount: nonceAccount)
                     return leftover
-                case .remint:
-                    try deleteKeychainTokenIfMatches(
-                        account: slot.account,
-                        expected: leftover,
-                        context: "late winner preplant token rotate"
+                case .remint(let preserveInFlightSignatures):
+                    try rotateRemintingToken(
+                        leftover,
+                        preserveInFlightSignatures: preserveInFlightSignatures,
+                        context: preserveInFlightSignatures
+                            ? "lease-validated late winner token rotate"
+                            : "late winner preplant token rotate"
                     )
-                    try deleteKeychainNonceIfTokenGoneOrMatches(
-                        nonceAccount: nonceAccount,
-                        tokenAccount: slot.account,
-                        expectedToken: leftover,
-                        context: "late winner preplant nonce rotate"
-                    )
-                    try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub on late winner rotate")
                 }
-            } else {
+            } else if migratedNonces == nil {
                 try deleteKeychainAccount(nonceAccount, context: "corrupt slot nonce remove")
             }
         } else {
@@ -930,7 +972,17 @@ public struct RemoteCommandAuth: Sendable {
             // cannot observe a token without its claim (or claim a half-published mint).
             try writeKeychainToken(token, account: slot.account)
             try writeSlotClaim(claimAccount: claimAccount, token: token)
-            try nonceStore.provisionEmpty(integrityKey: token)
+            if let migrated = migratedNonces {
+                // Rebound prior replay state under the new secret so retired-MAC
+                // verification (integrityKey = live secret) still rejects consumed nonces.
+                try nonceStore.provisionMap(
+                    migrated,
+                    integrityKey: token,
+                    now: now().timeIntervalSince1970
+                )
+            } else {
+                try nonceStore.provisionEmpty(integrityKey: token)
+            }
             // Do not publish an HMAC mint seal: peers who plant the token can forge
             // HMAC(token). Cross-process adopt relies on process-local seals; fresh
             // CLI processes remint under a validated lease and rebind that lease.
@@ -958,7 +1010,10 @@ public struct RemoteCommandAuth: Sendable {
 
     private enum SlotClaimResult {
         case adopt
-        case remint
+        /// Rotate the live secret. When `preserveInFlightSignatures` is true (lease-
+        /// validated remint), retire the prior secret for the signature window and
+        /// migrate accepted nonces so replay rejection survives the rotation.
+        case remint(preserveInFlightSignatures: Bool)
     }
 
     /// First successful claim under the public slot pointer owns the secret.
@@ -982,12 +1037,12 @@ public struct RemoteCommandAuth: Sendable {
                 try writeSlotClaim(claimAccount: claimAccount, token: token, allowUpdate: false)
                 // We created the claim against a possibly preplanted token — remint.
                 try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub on claim create remint")
-                return .remint
+                return .remint(preserveInFlightSignatures: false)
             } catch {
                 // Lost the claim create race. A peer can SecItemAdd a matching claim
                 // for a planted token in that window — do not treat the race as provenance.
                 try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub on claim race remint")
-                return .remint
+                return .remint(preserveInFlightSignatures: false)
             }
         }
 
@@ -1011,14 +1066,14 @@ public struct RemoteCommandAuth: Sendable {
                   Self.constantTimeEquals(existingClaim, expected)
             else {
                 try deleteKeychainAccount(claimAccount, context: "slot claim mismatch remove")
-                return .remint
+                return .remint(preserveInFlightSignatures: false)
             }
             // Keep presence noted so the caller can record a lease for the reminted secret.
             if Self.isLeaseValidatedToken(token) {
                 Self.noteRecentUserPresence()
             }
             try deleteKeychainAccount(claimAccount, context: "preplant claim rotate after attestation")
-            return .remint
+            return .remint(preserveInFlightSignatures: true)
         }
 
         // Peer reminted under a lease this process already validated for a prior
@@ -1032,7 +1087,7 @@ public struct RemoteCommandAuth: Sendable {
 
         if Self.slotClaimAttestationHandler == nil {
             try deleteKeychainAccount(claimAccount, context: "preplant claim rotate without attestation")
-            return .remint
+            return .remint(preserveInFlightSignatures: false)
         }
         throw SlotClaimAttestationRequired()
     }
@@ -1683,10 +1738,15 @@ public struct RemoteCommandAuth: Sendable {
     ///
     /// Prevents a recovery path from wiping a concurrently published provisioned
     /// token that appeared after our initial miss/corrupt read.
+    ///
+    /// When `retirePrior` is true, retains the secret for `signatureMaxAgeSeconds`
+    /// so in-flight MACs still verify. Callers that preserve in-flight signatures
+    /// must also migrate the nonce map; retiring without migration allows replay.
     private func deleteKeychainTokenIfMatches(
         account: String,
         expected: String,
-        context: String
+        context: String,
+        retirePrior: Bool = true
     ) throws {
         guard let current = try readKeychainToken(account: account) else {
             return
@@ -1694,7 +1754,7 @@ public struct RemoteCommandAuth: Sendable {
         guard current == expected else {
             return
         }
-        if Self.isProvisionedToken(expected) {
+        if retirePrior, Self.isProvisionedToken(expected) {
             try rememberRetiredToken(expected, slotAccount: account)
         }
         try deleteKeychainAccount(account, context: context)

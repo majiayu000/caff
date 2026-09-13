@@ -325,3 +325,29 @@ private func temporaryAuthDirectory() throws -> URL {
     }
     #expect(alteredOptions == .invalidToken)
 }
+
+@Test func acceptedNonceStoreMigratesReplayStateAcrossIntegrityRebind() throws {
+    let directory = try temporaryAuthDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let store = AcceptedNonceStore(
+        directoryURL: directory,
+        usesKeychain: false
+    )
+    let oldKey = "old-install-secret"
+    let newKey = "new-install-secret"
+    let now: TimeInterval = 1_700_000_400
+    let expiresAt = now + RemoteCommandAuth.signatureMaxAgeSeconds
+
+    try store.provisionEmpty(integrityKey: oldKey)
+    #expect(try store.consume("nonce-1", expiresAt: expiresAt, now: now, integrityKey: oldKey))
+    #expect(try store.consume("nonce-1", expiresAt: expiresAt, now: now, integrityKey: oldKey) == false)
+
+    let migrated = try store.exportMap(integrityKey: oldKey)
+    try store.provisionMap(migrated, integrityKey: newKey, now: now)
+
+    // After remint migration, the live (new) integrity key must still reject the
+    // already-consumed nonce — the failure mode when remint wiped to an empty map.
+    #expect(try store.consume("nonce-1", expiresAt: expiresAt, now: now, integrityKey: newKey) == false)
+    #expect(try store.consume("nonce-2", expiresAt: expiresAt, now: now, integrityKey: newKey))
+}

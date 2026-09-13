@@ -411,6 +411,45 @@ do {
     try published.data(using: .utf8)!.write(to: preserveAuth.tokenFileURL, options: .atomic)
     let preserved = try preserveAuth.loadOrCreateToken()
     check(preserved == published, "recovery must not delete a concurrently published complete token")
+
+    // Remint must rebind accepted nonces under the new integrity key. Wiping to an
+    // empty map while still accepting retired MACs would allow ~120s same-UID replay.
+    let migrateDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("caff-core-checks-auth-migrate-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: migrateDirectory) }
+    try FileManager.default.createDirectory(at: migrateDirectory, withIntermediateDirectories: true)
+    let nonceStore = AcceptedNonceStore(directoryURL: migrateDirectory, usesKeychain: false)
+    let oldKey = "old-install-secret"
+    let newKey = "new-install-secret"
+    let migrateNow: TimeInterval = 1_700_000_500
+    let migrateExpiry = migrateNow + RemoteCommandAuth.signatureMaxAgeSeconds
+    try nonceStore.provisionEmpty(integrityKey: oldKey)
+    let firstConsume = try nonceStore.consume(
+        "nonce-1",
+        expiresAt: migrateExpiry,
+        now: migrateNow,
+        integrityKey: oldKey
+    )
+    check(firstConsume, "first nonce consume under old key should succeed")
+    let migrated = try nonceStore.exportMap(integrityKey: oldKey)
+    try nonceStore.provisionMap(migrated, integrityKey: newKey, now: migrateNow)
+    let replayAfterMigrate = try nonceStore.consume(
+        "nonce-1",
+        expiresAt: migrateExpiry,
+        now: migrateNow,
+        integrityKey: newKey
+    )
+    check(
+        replayAfterMigrate == false,
+        "remint migration must preserve consumed nonces under the live integrity key"
+    )
+    let freshAfterMigrate = try nonceStore.consume(
+        "nonce-2",
+        expiresAt: migrateExpiry,
+        now: migrateNow,
+        integrityKey: newKey
+    )
+    check(freshAfterMigrate, "fresh nonces should still be accepted after remint migration")
 } catch {
     failures.append("remote command auth checks failed: \(error)")
 }
