@@ -276,10 +276,11 @@
 **公开 API**:
 - `enum RemoteCommandAuthError`: `.missingToken` / `.invalidToken` / `.storageFailed(String)`
 - `struct RemoteCommandAuth`
-  - `static let tokenFileName` / `tokenByteCount` / `signatureMaxAgeSeconds`
+  - `static let tokenFileName` / `nonceFileName` / `tokenByteCount` / `signatureMaxAgeSeconds`
+  - `static let keychainService` / `keychainAccount`
   - `enum PayloadKey`: `token` / `mac` / `nonce` / `timestamp`
   - `init(directoryURL:now:)`
-  - `var tokenFileURL: URL`
+  - `var tokenFileURL: URL` / `nonceFileURL: URL`
   - `func loadOrCreateToken() throws -> String`
   - `func isValid(_:) -> Bool`
   - `func verify(_:) throws`
@@ -288,9 +289,9 @@
   - `func verifySignedPayload(_:) throws`
 
 **不变量**:
-- 安装级共享密钥写在 Application Support/Caff/`remote-command.token`,权限 `0o600`
-- `loadOrCreateToken` 先写临时文件再 `link`/`rename` 原子发布;竞态失败者重新读取胜者文件
-- 已接受的签名 nonce 在时间窗内缓存并拒绝重放
+- 生产路径(默认 `directoryURL`)把安装级共享密钥存入 login Keychain(`service=local.caff.remote-command`),ACL 限定当前可执行文件;迁移后删除 Application Support 明文 token 文件
+- 显式 `directoryURL`(测试)仍用 Application Support 风格文件:`remote-command.token`,权限 `0o600`,`O_EXCL`+`link` 原子发布
+- 已接受的签名 nonce 持久化到同目录 `remote-command.nonces`,跨进程重启在时间窗内拒绝重放
 - DNC 路径通过 `sign`/`authenticate` 只携带短时 HMAC(`mac`/`nonce`/`ts`),**从不广播**可复用 bearer token
 - URL 路径仍可用 `token=` 直传;缺失/错误凭证与 `.storageFailed` 必须区分处理
 - 签名时间窗默认 120 秒;过期或 MAC 不匹配 → `.invalidToken`
@@ -298,16 +299,17 @@
 **失败模式**:
 - `.missingToken` — 未提供 `token`/`mac`
 - `.invalidToken` — 错 token、坏 MAC、缺 nonce/ts、签名过期、nonce 重放
-- `.storageFailed` — 读写权限/IO/随机数失败(应走正常错误通道,不可静默当伪造 IPC)
+- `.storageFailed` — Keychain/文件读写权限/IO/随机数失败(应走正常错误通道,不可静默当伪造 IPC)
 
 **等价类**:
 | 场景 | 期望 |
 |---|---|
-| 首次 loadOrCreate | 生成 64-hex token 并落盘 |
+| 首次 loadOrCreate | 生成 64-hex token 并写入 Keychain(生产)或文件(测试) |
 | 再次 loadOrCreate | 返回同一 token |
 | verify(nil/"") | `.missingToken` |
 | verify(wrong) | `.invalidToken` |
 | verify(matching) | 通过 |
 | sign → authenticate | 通过且 payload 无 `token` |
 | 过期 ts / 坏 mac / 重放 nonce | `.invalidToken` |
+| 重启后重放同一 nonce | `.invalidToken` |
 | 并发首次创建 | 双方最终读到同一胜者 token |

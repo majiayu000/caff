@@ -168,6 +168,24 @@ private func temporaryAuthDirectory() throws -> URL {
     #expect(replayed == .invalidToken)
 }
 
+@Test func remoteCommandAuthPersistsNonceRejectionAcrossRestart() throws {
+    let directory = try temporaryAuthDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let fixedNow = Date(timeIntervalSince1970: 1_700_000_200)
+    let auth = RemoteCommandAuth(directoryURL: directory, now: { fixedNow })
+    let signed = try auth.sign(["action": "start"])
+    try auth.verifySignedPayload(signed)
+    #expect(FileManager.default.fileExists(atPath: auth.nonceFileURL.path))
+
+    // New instance simulates an app relaunch with an empty process-local cache.
+    let restarted = RemoteCommandAuth(directoryURL: directory, now: { fixedNow })
+    let replayed = #expect(throws: RemoteCommandAuthError.self) {
+        try restarted.verifySignedPayload(signed)
+    }
+    #expect(replayed == .invalidToken)
+}
+
 @Test func remoteCommandAuthRecoversEmptyTokenFile() throws {
     let directory = try temporaryAuthDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }

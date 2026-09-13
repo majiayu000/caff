@@ -20,33 +20,106 @@ public enum RemoteCommandAuthError: Error, CustomStringConvertible, Equatable, S
     }
 }
 
-/// Process-wide cache of accepted signed-payload nonces until their timestamps expire.
-private final class AcceptedNonceCache: @unchecked Sendable {
+/// Durable cache of accepted signed-payload nonces until their timestamps expire.
+///
+/// Survives process restarts by persisting under the auth directory so a captured
+/// payload cannot be replayed after the app relaunches inside the validity window.
+private final class AcceptedNonceStore: @unchecked Sendable {
+    private let fileURL: URL
     private let lock = NSLock()
-    private var expiresAtByNonce: [String: TimeInterval] = [:]
+
+    init(directoryURL: URL) {
+        self.fileURL = directoryURL.appendingPathComponent(RemoteCommandAuth.nonceFileName, isDirectory: false)
+    }
 
     /// Returns `true` when `nonce` is newly recorded; `false` when it was already consumed.
-    func consume(_ nonce: String, expiresAt: TimeInterval, now: TimeInterval) -> Bool {
+    func consume(_ nonce: String, expiresAt: TimeInterval, now: TimeInterval) throws -> Bool {
         lock.lock()
         defer { lock.unlock() }
+
+        var expiresAtByNonce = try loadMap()
         expiresAtByNonce = expiresAtByNonce.filter { $0.value > now }
         if expiresAtByNonce[nonce] != nil {
+            try saveMap(expiresAtByNonce)
             return false
         }
         expiresAtByNonce[nonce] = expiresAt
+        try saveMap(expiresAtByNonce)
         return true
+    }
+
+    private func loadMap() throws -> [String: TimeInterval] {
+        do {
+            let data = try Data(contentsOf: fileURL)
+            guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return [:]
+            }
+            var result: [String: TimeInterval] = [:]
+            for (key, value) in root {
+                if let number = value as? NSNumber {
+                    result[key] = number.doubleValue
+                } else if let double = value as? Double {
+                    result[key] = double
+                }
+            }
+            return result
+        } catch CocoaError.fileReadNoSuchFile {
+            return [:]
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain
+            && error.code == NSFileReadNoSuchFileError {
+            return [:]
+        } catch {
+            throw RemoteCommandAuthError.storageFailed("nonce cache read failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func saveMap(_ map: [String: TimeInterval]) throws {
+        do {
+            try FileManager.default.createDirectory(
+                at: fileURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let payload = map.mapValues { $0 as Any }
+            let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+            let tempURL = fileURL.deletingLastPathComponent().appendingPathComponent(
+                ".\(RemoteCommandAuth.nonceFileName).\(UUID().uuidString).tmp",
+                isDirectory: false
+            )
+            try data.write(to: tempURL, options: .atomic)
+            let status = chmod(tempURL.path, 0o600)
+            if status != 0 {
+                try? FileManager.default.removeItem(at: tempURL)
+                throw RemoteCommandAuthError.storageFailed("nonce cache chmod failed (\(errno))")
+            }
+            // Replace atomically when possible.
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                _ = try FileManager.default.replaceItemAt(fileURL, withItemAt: tempURL)
+            } else {
+                try FileManager.default.moveItem(at: tempURL, to: fileURL)
+            }
+        } catch let error as RemoteCommandAuthError {
+            throw error
+        } catch {
+            throw RemoteCommandAuthError.storageFailed("nonce cache write failed: \(error.localizedDescription)")
+        }
     }
 }
 
 /// Per-install shared secret for authenticating local remote-control commands.
 ///
-/// The token lives under Application Support/Caff. CLI/DNC callers never broadcast
-/// the reusable secret; they attach a short-lived HMAC instead. URL callers may
-/// still pass `token=` after reading the provisioned file.
+/// Production installs store the secret in the login Keychain with an ACL limited
+/// to this executable (code-identity gate), not as a same-UID-readable file under
+/// Application Support. Explicit `directoryURL` (tests) keeps the legacy file store.
+/// CLI/DNC callers never broadcast the reusable secret; they attach a short-lived
+/// HMAC instead. URL callers may still pass `token=` after reading the secret via
+/// `loadOrCreateToken()` / Keychain.
 public struct RemoteCommandAuth: Sendable {
     public static let tokenFileName = "remote-command.token"
+    public static let nonceFileName = "remote-command.nonces"
     public static let tokenByteCount = 32
     public static let signatureMaxAgeSeconds: TimeInterval = 120
+    public static let keychainService = "local.caff.remote-command"
+    public static let keychainAccount = "install-token"
 
     public enum PayloadKey {
         public static let token = "token"
@@ -55,13 +128,15 @@ public struct RemoteCommandAuth: Sendable {
         public static let timestamp = "ts"
     }
 
-    private static let acceptedNonces = AcceptedNonceCache()
-
     private let directoryURL: URL
+    private let usesKeychain: Bool
+    private let nonceStore: AcceptedNonceStore
     private let now: @Sendable () -> Date
 
     public init(directoryURL: URL? = nil, now: @escaping @Sendable () -> Date = { Date() }) {
         self.now = now
+        // Custom directories are for tests/isolation and keep the file-backed store.
+        self.usesKeychain = directoryURL == nil
         if let directoryURL {
             self.directoryURL = directoryURL
         } else {
@@ -69,35 +144,23 @@ public struct RemoteCommandAuth: Sendable {
                 ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             self.directoryURL = supportRoot.appendingPathComponent("Caff", isDirectory: true)
         }
+        self.nonceStore = AcceptedNonceStore(directoryURL: self.directoryURL)
     }
 
     public var tokenFileURL: URL {
         directoryURL.appendingPathComponent(Self.tokenFileName, isDirectory: false)
     }
 
+    public var nonceFileURL: URL {
+        directoryURL.appendingPathComponent(Self.nonceFileName, isDirectory: false)
+    }
+
     /// Loads the existing install token, creating one if missing.
     public func loadOrCreateToken() throws -> String {
-        if let existing = try readTokenIfPresent() {
-            return existing
+        if usesKeychain {
+            return try loadOrCreateKeychainToken()
         }
-        // Recover empty/incomplete token paths left by a crashed exclusive create.
-        // Removal is conditional on the empty inode still being present so a
-        // concurrently published complete token is never deleted (TOCTOU).
-        try removeIncompleteTokenIfPresent()
-        if let existing = try readTokenIfPresent() {
-            return existing
-        }
-        let token = try Self.generateToken()
-        do {
-            try persistExclusively(token)
-            return token
-        } catch {
-            // Another process may have won the create race — reread the winner.
-            if let existing = try readTokenIfPresent() {
-                return existing
-            }
-            throw error
-        }
+        return try loadOrCreateFileToken()
     }
 
     /// Returns true when `provided` matches the install token (creating the token if needed).
@@ -170,8 +233,156 @@ public struct RemoteCommandAuth: Sendable {
 
         // Record after MAC verification so forged payloads cannot burn valid nonces.
         let expiresAt = timestamp + Self.signatureMaxAgeSeconds
-        guard Self.acceptedNonces.consume(nonce, expiresAt: expiresAt, now: current) else {
+        guard try nonceStore.consume(nonce, expiresAt: expiresAt, now: current) else {
             throw RemoteCommandAuthError.invalidToken
+        }
+    }
+
+    // MARK: - Keychain-backed production store
+
+    private func loadOrCreateKeychainToken() throws -> String {
+        if let existing = try readKeychainToken() {
+            return existing
+        }
+        // Migrate a legacy Application Support token into the Keychain once, then
+        // delete the same-UID-readable file so peer processes cannot scrape it.
+        if let legacy = try readTokenIfPresent() {
+            try writeKeychainToken(legacy)
+            try removeLegacyTokenFileIfPresent()
+            return legacy
+        }
+        let token = try Self.generateToken()
+        do {
+            try writeKeychainToken(token)
+            try removeLegacyTokenFileIfPresent()
+            return token
+        } catch {
+            if let existing = try readKeychainToken() {
+                return existing
+            }
+            throw error
+        }
+    }
+
+    private func readKeychainToken() throws -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.keychainService,
+            kSecAttrAccount as String: Self.keychainAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound {
+            return nil
+        }
+        guard status == errSecSuccess else {
+            throw RemoteCommandAuthError.storageFailed("keychain read failed (\(status))")
+        }
+        guard
+            let data = item as? Data,
+            let token = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            !token.isEmpty
+        else {
+            throw RemoteCommandAuthError.storageFailed("keychain token is empty or not UTF-8")
+        }
+        return token
+    }
+
+    private func writeKeychainToken(_ token: String) throws {
+        guard let data = token.data(using: .utf8) else {
+            throw RemoteCommandAuthError.storageFailed("token is not valid UTF-8")
+        }
+
+        let deleteQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.keychainService,
+            kSecAttrAccount as String: Self.keychainAccount,
+        ]
+        SecItemDelete(deleteQuery as CFDictionary)
+
+        var trustedApp: SecTrustedApplication?
+        let trustedStatus = SecTrustedApplicationCreateFromPath(nil, &trustedApp)
+        guard trustedStatus == errSecSuccess, let trustedApp else {
+            throw RemoteCommandAuthError.storageFailed(
+                "SecTrustedApplicationCreateFromPath failed (\(trustedStatus))"
+            )
+        }
+
+        var access: SecAccess?
+        let accessStatus = SecAccessCreate(
+            "Caff remote command token" as CFString,
+            [trustedApp] as CFArray,
+            &access
+        )
+        guard accessStatus == errSecSuccess, let access else {
+            throw RemoteCommandAuthError.storageFailed("SecAccessCreate failed (\(accessStatus))")
+        }
+
+        var addQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.keychainService,
+            kSecAttrAccount as String: Self.keychainAccount,
+            kSecAttrLabel as String: "Caff remote command token",
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecAttrAccess as String: access,
+            kSecValueData as String: data,
+        ]
+
+        // Prefer the classic ACL attribute; some hosts reject mixing it with
+        // modern access-control flags, so fall back without kSecAttrAccessible.
+        var status = SecItemAdd(addQuery as CFDictionary, nil)
+        if status == errSecParam {
+            addQuery.removeValue(forKey: kSecAttrAccessible as String)
+            status = SecItemAdd(addQuery as CFDictionary, nil)
+        }
+        if status == errSecDuplicateItem {
+            // Lost a create race — caller will reread.
+            return
+        }
+        guard status == errSecSuccess else {
+            throw RemoteCommandAuthError.storageFailed("keychain write failed (\(status))")
+        }
+    }
+
+    private func removeLegacyTokenFileIfPresent() throws {
+        let path = tokenFileURL.path
+        if FileManager.default.fileExists(atPath: path) {
+            do {
+                try FileManager.default.removeItem(at: tokenFileURL)
+            } catch {
+                throw RemoteCommandAuthError.storageFailed(
+                    "failed to remove legacy token file: \(error.localizedDescription)"
+                )
+            }
+        }
+    }
+
+    // MARK: - File-backed store (tests / explicit directory)
+
+    private func loadOrCreateFileToken() throws -> String {
+        if let existing = try readTokenIfPresent() {
+            return existing
+        }
+        // Recover empty/incomplete token paths left by a crashed exclusive create.
+        // Removal is conditional on the empty inode still being present so a
+        // concurrently published complete token is never deleted (TOCTOU).
+        try removeIncompleteTokenIfPresent()
+        if let existing = try readTokenIfPresent() {
+            return existing
+        }
+        let token = try Self.generateToken()
+        do {
+            try persistExclusively(token)
+            return token
+        } catch {
+            // Another process may have won the create race — reread the winner.
+            if let existing = try readTokenIfPresent() {
+                return existing
+            }
+            throw error
         }
     }
 

@@ -303,6 +303,17 @@ do {
     } catch let error as RemoteCommandAuthError {
         check(error == .invalidToken, "remote auth should report replayed nonce")
     }
+    check(
+        FileManager.default.fileExists(atPath: auth.nonceFileURL.path),
+        "accepted nonces should be persisted for restart-safe replay rejection"
+    )
+    let restartedAuth = RemoteCommandAuth(directoryURL: authDirectory)
+    do {
+        try restartedAuth.verifySignedPayload(signed)
+        failures.append("remote auth should reject replayed nonce after restart")
+    } catch let error as RemoteCommandAuthError {
+        check(error == .invalidToken, "remote auth should report replayed nonce after restart")
+    }
     var tampered = signed
     tampered["action"] = "start"
     do {
