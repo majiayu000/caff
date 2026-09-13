@@ -25,8 +25,10 @@ extension AppDelegate {
         // short-lived URL ticket via `caff remote-token` (user-authorized), not the
         // durable Keychain secret (custom schemes are not exclusive).
         RemoteCommandUserAuthorization.installSlotClaimAttestationHandler()
+        RemoteCommandUserAuthorization.noteValidLeasesIfPresent()
         do {
             _ = try RemoteCommandAuth().loadOrCreateToken()
+            RemoteCommandUserAuthorization.recordProvisioningLeaseIfNeeded()
         } catch {
             fputs("Caff failed to provision remote command token: \(error)\n", stderr)
         }

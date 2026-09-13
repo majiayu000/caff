@@ -414,14 +414,26 @@ public struct RemoteCommandAuth: Sendable {
     /// Cross-process lock held while publishing token + claim + nonce together.
     public static let slotProvisioningLockAccount = "slot-provisioning.v1"
 
-    /// Optional user-presence gate invoked when adopting a pre-existing slot claim.
-    /// App/CLI set this to LocalAuthentication; tests leave it nil (fail closed → remint).
+    /// Optional user-presence gate invoked when a pre-existing slot claim must be
+    /// rotated. App/CLI set this to LocalAuthentication; tests leave it nil
+    /// (fail closed → remint without prompting).
     public static var slotClaimAttestationHandler: (() throws -> Void)?
 
-    /// Process-local set of claim attestations already satisfied this launch so
-    /// repeated `loadOrCreateToken` calls do not re-prompt LocalAuthentication.
+    /// Process-local set of claim keys this launch already sealed (after our mint
+    /// or a lease-validated adopt) so repeated loads do not re-prompt or remint.
     private static let attestedClaimLock = NSLock()
     private static var attestedClaimKeys: Set<String> = []
+
+    /// Tokens whose HMAC-bound signing lease was verified this process. A valid
+    /// lease proves prior user presence bound to that secret, so fresh CLI/hook
+    /// processes may adopt without re-attesting the slot claim.
+    private static let leaseValidatedLock = NSLock()
+    private static var leaseValidatedTokens: Set<String> = []
+
+    /// Set after LocalAuthentication in the CLI/app authorization path so the
+    /// subsequent remint under the provisioning lock does not re-prompt.
+    private static let recentPresenceLock = NSLock()
+    private static var recentUserPresence = false
 
     public enum PayloadKey {
         public static let token = "token"
@@ -471,6 +483,62 @@ public struct RemoteCommandAuth: Sendable {
             return try loadOrCreateKeychainToken()
         }
         return try loadOrCreateFileToken()
+    }
+
+    /// Best-effort read of an already-provisioned Keychain token without claim
+    /// attestation or remint. Used for lease MAC verification so a valid lease can
+    /// gate adopt without a chicken-and-egg prompt.
+    public func peekProvisionedKeychainToken() throws -> String? {
+        guard usesKeychain else { return nil }
+        guard let slot = try Self.readKeychainSlotAccountValue() else { return nil }
+        guard let token = try readKeychainToken(account: slot), Self.isProvisionedToken(token) else {
+            return nil
+        }
+        return token
+    }
+
+    /// Records that `token` was authenticated by an HMAC-valid signing lease.
+    public static func noteLeaseValidatedToken(_ token: String) {
+        leaseValidatedLock.lock()
+        leaseValidatedTokens.insert(token)
+        leaseValidatedLock.unlock()
+    }
+
+    /// Records that LocalAuthentication just succeeded so the following remint
+    /// does not re-prompt under the provisioning lock.
+    public static func noteRecentUserPresence() {
+        recentPresenceLock.lock()
+        recentUserPresence = true
+        recentPresenceLock.unlock()
+    }
+
+    /// Returns whether recent user presence was noted, optionally clearing it.
+    public static func hasRecentUserPresence(consume: Bool = false) -> Bool {
+        recentPresenceLock.lock()
+        let value = recentUserPresence
+        if consume {
+            recentUserPresence = false
+        }
+        recentPresenceLock.unlock()
+        return value
+    }
+
+    private static func isLeaseValidatedToken(_ token: String) -> Bool {
+        leaseValidatedLock.lock()
+        defer { leaseValidatedLock.unlock() }
+        return leaseValidatedTokens.contains(token)
+    }
+
+    private static func sealAttestedClaimKey(_ key: String) {
+        attestedClaimLock.lock()
+        attestedClaimKeys.insert(key)
+        attestedClaimLock.unlock()
+    }
+
+    private static func hasAttestedClaimKey(_ key: String) -> Bool {
+        attestedClaimLock.lock()
+        defer { attestedClaimLock.unlock() }
+        return attestedClaimKeys.contains(key)
     }
 
     /// Returns true when `provided` matches the install token (creating the token if needed).
@@ -633,17 +701,48 @@ public struct RemoteCommandAuth: Sendable {
         // Historical plantable trust markers are never provenance — scrub on bootstrap.
         try deleteKeychainAccount(Self.slotTrustMarkerAccount, context: "legacy slot trust marker scrub")
 
-        let slot = try loadOrCreateKeychainSlotAccount()
-        let nonceAccount = Self.nonceAccount(forSlot: slot.account)
-        let claimAccount = Self.slotClaimAccount(forSlot: slot.account)
-        return try withSlotProvisioningLock {
-            try loadOrCreateKeychainTokenLocked(
-                slot: slot,
-                nonceAccount: nonceAccount,
-                claimAccount: claimAccount
-            )
+        // Slot pointer + created flag must be observed under the same provisioning
+        // lock as token/claim/nonce publish so a stale created==true cannot scrub a
+        // concurrent winner's claim/nonce. LocalAuthentication runs outside the lock
+        // so a killed prompt cannot leave a permanent Keychain lock.
+        for _ in 0..<4 {
+            let outcome = try withSlotProvisioningLock { () -> SlotProvisioningOutcome in
+                let slot = try loadOrCreateKeychainSlotAccount()
+                let nonceAccount = Self.nonceAccount(forSlot: slot.account)
+                let claimAccount = Self.slotClaimAccount(forSlot: slot.account)
+                do {
+                    let token = try loadOrCreateKeychainTokenLocked(
+                        slot: slot,
+                        nonceAccount: nonceAccount,
+                        claimAccount: claimAccount
+                    )
+                    return .token(token)
+                } catch is SlotClaimAttestationRequired {
+                    return .needsAttestation
+                }
+            }
+            switch outcome {
+            case let .token(token):
+                return token
+            case .needsAttestation:
+                guard let attest = Self.slotClaimAttestationHandler else {
+                    // No handler: next locked pass remints fail-closed.
+                    Self.noteRecentUserPresence()
+                    continue
+                }
+                try attest()
+                Self.noteRecentUserPresence()
+            }
         }
+        throw RemoteCommandAuthError.storageFailed("slot claim attestation retry exhausted")
     }
+
+    private enum SlotProvisioningOutcome {
+        case token(String)
+        case needsAttestation
+    }
+
+    private struct SlotClaimAttestationRequired: Error {}
 
     private func loadOrCreateKeychainTokenLocked(
         slot: (account: String, created: Bool),
@@ -764,9 +863,7 @@ public struct RemoteCommandAuth: Sendable {
             // Seal this process's attestation cache so subsequent loads adopt the
             // claim we just published without rotating again.
             let sealedKey = claimAccount + "|" + Self.slotClaimValue(forToken: token)
-            Self.attestedClaimLock.lock()
-            Self.attestedClaimKeys.insert(sealedKey)
-            Self.attestedClaimLock.unlock()
+            Self.sealAttestedClaimKey(sealedKey)
             return token
         } catch {
             // Lost a create race — return the winner's provisioned secret, never ours.
@@ -794,12 +891,14 @@ public struct RemoteCommandAuth: Sendable {
     /// A same-UID peer can preplant `keychain-slot`, a matching token, and even
     /// `slotClaimValue(forToken:)` (HMAC is peer-computable from the token). A
     /// pre-existing matching claim is therefore *not* proof of Caff provenance.
-    /// Provenance is: exclusive create of the per-slot claim by a live process,
-    /// or — when the claim was already present — LocalAuthentication attestation
-    /// before adopt. Plantable Keychain markers (including historical
-    /// `slot-trust.v1`) are never treated as live provenance.
+    /// Provenance is: exclusive create of the per-slot claim by a live process
+    /// (then remint), a process-local seal after our mint, or an HMAC-valid
+    /// signing lease bound to this token. LocalAuthentication proves user presence
+    /// but not credential provenance — after attesting a pre-existing claim we
+    /// remint rather than adopt the possibly attacker-known secret.
     private func claimSlotOwnership(claimAccount: String, token: String) throws -> SlotClaimResult {
         let expected = Self.slotClaimValue(forToken: token)
+        let attestationKey = claimAccount + "|" + expected
 
         // Prefer exclusive create without trusting a pre-read match (peers can plant HMAC).
         if try readSlotClaimValue(claimAccount: claimAccount) == nil {
@@ -815,37 +914,43 @@ public struct RemoteCommandAuth: Sendable {
                 else {
                     return .remint
                 }
+                Self.sealAttestedClaimKey(attestationKey)
                 return .adopt
             }
         }
 
         // Claim already existed before this live attempt — may be peer-planted.
-        // Plantable Keychain markers (including historical slot-trust.v1) are never
-        // provenance. Require LocalAuthentication once per process before adopt;
-        // without a handler, fail closed and remint.
-        let attestationKey = claimAccount + "|" + expected
-        Self.attestedClaimLock.lock()
-        let alreadyAttested = Self.attestedClaimKeys.contains(attestationKey)
-        Self.attestedClaimLock.unlock()
+        // A verified signing lease bound to this token proves prior authorized
+        // provisioning across processes without re-prompting.
+        if Self.isLeaseValidatedToken(token) {
+            Self.sealAttestedClaimKey(attestationKey)
+            return .adopt
+        }
 
-        if !alreadyAttested {
-            guard let attest = Self.slotClaimAttestationHandler else {
-                try deleteKeychainAccount(claimAccount, context: "preplant claim rotate without attestation")
+        // Same-process seal after our mint (or prior lease adopt) — reuse.
+        if Self.hasAttestedClaimKey(attestationKey) {
+            return .adopt
+        }
+
+        // First encounter of an untrusted pre-existing claim: require user presence
+        // outside the provisioning lock, then remint. Do not adopt the attacker-known
+        // secret after LA. Presence is left noted so the caller can record a lease.
+        if Self.hasRecentUserPresence(consume: false) {
+            guard let existingClaim = try readSlotClaimValue(claimAccount: claimAccount),
+                  Self.constantTimeEquals(existingClaim, expected)
+            else {
+                try deleteKeychainAccount(claimAccount, context: "slot claim mismatch remove")
                 return .remint
             }
-            try attest()
-            Self.attestedClaimLock.lock()
-            Self.attestedClaimKeys.insert(attestationKey)
-            Self.attestedClaimLock.unlock()
-        }
-
-        guard let existingClaim = try readSlotClaimValue(claimAccount: claimAccount),
-              Self.constantTimeEquals(existingClaim, expected)
-        else {
-            try deleteKeychainAccount(claimAccount, context: "slot claim mismatch remove")
+            try deleteKeychainAccount(claimAccount, context: "preplant claim rotate after attestation")
             return .remint
         }
-        return .adopt
+
+        if Self.slotClaimAttestationHandler == nil {
+            try deleteKeychainAccount(claimAccount, context: "preplant claim rotate without attestation")
+            return .remint
+        }
+        throw SlotClaimAttestationRequired()
     }
 
     /// Holds an exclusive Keychain lock around slot provisioning / claim races so
@@ -861,14 +966,19 @@ public struct RemoteCommandAuth: Sendable {
         return try body()
     }
 
+    /// Lock payload: owner PID + wall-clock expiry so abandoned items left by a
+    /// killed process (especially during LA under the lock) can be reclaimed.
+    private static let keychainLockTTL: TimeInterval = 90
+
     fileprivate static func acquireKeychainLock(account: String, label: String) throws {
         let access = try makeExecutableScopedAccess(descriptor: label)
-        guard let data = UUID().uuidString.data(using: .utf8) else {
-            throw RemoteCommandAuthError.storageFailed("keychain lock payload is not UTF-8")
-        }
         var lastStatus: OSStatus = errSecSuccess
         // Bounded spin: another live Caff process may hold the lock briefly.
         for _ in 0..<200 {
+            let payload = keychainLockPayload(expiresAt: Date().timeIntervalSince1970 + keychainLockTTL)
+            guard let data = payload.data(using: .utf8) else {
+                throw RemoteCommandAuthError.storageFailed("keychain lock payload is not UTF-8")
+            }
             var addQuery: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: keychainService,
@@ -890,9 +1000,71 @@ public struct RemoteCommandAuth: Sendable {
             if status != errSecDuplicateItem {
                 throw RemoteCommandAuthError.storageFailed("keychain lock acquire failed (\(status))")
             }
+            if try reclaimStaleKeychainLockIfNeeded(account: account) {
+                continue
+            }
             usleep(5_000)
         }
         throw RemoteCommandAuthError.storageFailed("keychain lock acquire timed out (\(lastStatus))")
+    }
+
+    private static func keychainLockPayload(expiresAt: TimeInterval) -> String {
+        "v1:\(getpid()):\(Int(expiresAt))"
+    }
+
+    private static func reclaimStaleKeychainLockIfNeeded(account: String) throws -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound {
+            return true
+        }
+        if status == errSecAuthFailed || status == errSecInteractionNotAllowed {
+            try releaseKeychainLock(account: account)
+            return true
+        }
+        guard status == errSecSuccess,
+              let data = item as? Data,
+              let raw = String(data: data, encoding: .utf8)
+        else {
+            return false
+        }
+
+        // Legacy UUID-only locks (no owner metadata) are treated as reclaimable so
+        // a killed holder cannot permanently wedge provisioning.
+        guard raw.hasPrefix("v1:"),
+              let pidSplit = raw.dropFirst(3).firstIndex(of: ":")
+        else {
+            try releaseKeychainLock(account: account)
+            return true
+        }
+        let pidRaw = String(raw[raw.index(raw.startIndex, offsetBy: 3)..<pidSplit])
+        let expiryRaw = String(raw[raw.index(after: pidSplit)...])
+        guard let pid = pid_t(pidRaw), let expiresAt = TimeInterval(expiryRaw) else {
+            try releaseKeychainLock(account: account)
+            return true
+        }
+
+        let expired = Date().timeIntervalSince1970 >= expiresAt
+        let ownerDead = !isProcessAlive(pid)
+        guard expired || ownerDead else {
+            return false
+        }
+        try releaseKeychainLock(account: account)
+        return true
+    }
+
+    private static func isProcessAlive(_ pid: pid_t) -> Bool {
+        if pid <= 0 { return false }
+        if kill(pid, 0) == 0 { return true }
+        return errno == EPERM
     }
 
     fileprivate static func releaseKeychainLock(account: String) throws {

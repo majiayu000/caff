@@ -40,6 +40,7 @@ final class CaffCommandLineController {
 
     func run(arguments: [String]) throws {
         RemoteCommandUserAuthorization.installSlotClaimAttestationHandler()
+        RemoteCommandUserAuthorization.noteValidLeasesIfPresent()
         guard let command = arguments.first else {
             throw CaffCommandLineError.missingCommand
         }

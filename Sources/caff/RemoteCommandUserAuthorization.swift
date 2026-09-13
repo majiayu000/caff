@@ -60,6 +60,7 @@ enum RemoteCommandUserAuthorization {
             return
         }
         try authenticateUser(reason: reason)
+        RemoteCommandAuth.noteRecentUserPresence()
         try writeLease(scope: scope, expiresAt: now.addingTimeInterval(leaseSeconds).timeIntervalSince1970)
     }
 
@@ -72,6 +73,7 @@ enum RemoteCommandUserAuthorization {
         now: Date = Date()
     ) throws {
         try authenticateUser(reason: reason)
+        RemoteCommandAuth.noteRecentUserPresence()
         try writeLease(scope: scope, expiresAt: now.addingTimeInterval(leaseSeconds).timeIntervalSince1970)
     }
 
@@ -84,7 +86,7 @@ enum RemoteCommandUserAuthorization {
         try authenticateUser(reason: reason)
     }
 
-    /// Registers LocalAuthentication as the gate when Caff adopts a pre-existing
+    /// Registers LocalAuthentication as the gate when Caff must rotate a pre-existing
     /// (possibly peer-planted) slot claim during Keychain bootstrap. Plantable
     /// Keychain markers are never treated as live provenance on their own.
     static func installSlotClaimAttestationHandler() {
@@ -92,6 +94,40 @@ enum RemoteCommandUserAuthorization {
             try requireFreshAuthorization(
                 reason: "Authorize Caff to establish remote-control credentials"
             )
+        }
+    }
+
+    /// If an HMAC-valid signing lease is present, note its token so Keychain bootstrap
+    /// can adopt across fresh CLI/app processes without re-prompting LocalAuthentication.
+    static func noteValidLeasesIfPresent(now: Date = Date()) {
+        do {
+            _ = try hasValidLease(for: .agentTouch, now: now)
+            _ = try hasValidLease(for: .signing, now: now)
+        } catch {
+            // Best-effort: token load will fall back to attestation/remint.
+        }
+    }
+
+    /// After provisioning that consumed user presence, record a signing lease so the
+    /// next process can adopt the reminted token without another prompt.
+    static func recordProvisioningLeaseIfNeeded(
+        leaseSeconds: TimeInterval = defaultLeaseSeconds,
+        now: Date = Date()
+    ) {
+        guard RemoteCommandAuth.hasRecentUserPresence(consume: true) else { return }
+        do {
+            if try hasValidLease(for: .signing, now: now) {
+                return
+            }
+            // Presence was just proven for remint; keep it noted through writeLease's
+            // loadOrCreateToken so we do not re-enter attestation.
+            RemoteCommandAuth.noteRecentUserPresence()
+            try writeLease(
+                scope: .signing,
+                expiresAt: now.addingTimeInterval(leaseSeconds).timeIntervalSince1970
+            )
+        } catch {
+            // Best-effort — next launch may re-attest.
         }
     }
 
@@ -200,28 +236,32 @@ enum RemoteCommandUserAuthorization {
         }
         let expiryRaw = String(body[..<split])
         let mac = String(body[body.index(after: split)...])
-        guard let expiresAt = TimeInterval(expiryRaw),
-              expiresAt.isFinite,
-              expiresAt >= Double(Int.min),
-              expiresAt <= Double(Int.max),
-              !mac.isEmpty
-        else {
+        // Parse as Int directly — Double(Int.max) rounds to 2^63, so a range check
+        // against Double(Int.max) would accept a non-Int-representable expiry and
+        // trap on Int(expiresAt) before the MAC can be rejected.
+        guard let expirySeconds = Int(expiryRaw), !mac.isEmpty else {
             return nil
         }
+        let expiresAt = TimeInterval(expirySeconds)
 
-        let token = try RemoteCommandAuth().loadOrCreateToken()
-        let expected = leaseMAC(token: token, scope: scope, expiresAt: Int(expiresAt))
+        guard let token = try RemoteCommandAuth().peekProvisionedKeychainToken() else {
+            return nil
+        }
+        let expected = leaseMAC(token: token, scope: scope, expiresAt: expirySeconds)
         guard RemoteCommandAuth.constantTimeEqualsPublic(mac, expected) else {
             return nil
         }
+        RemoteCommandAuth.noteLeaseValidatedToken(token)
         return expiresAt
     }
 
     private static func writeLease(scope: Scope, expiresAt: TimeInterval) throws {
         let token = try RemoteCommandAuth().loadOrCreateToken()
+        // Reject values that are not exactly Int-representable. Double(Int.max) rounds
+        // up to 2^63, so use an exclusive upper bound rather than <= Double(Int.max).
         guard expiresAt.isFinite,
               expiresAt >= Double(Int.min),
-              expiresAt <= Double(Int.max)
+              expiresAt < Double(Int.max)
         else {
             throw Error.storageFailed("lease expiry is not a finite Int-representable timestamp")
         }
