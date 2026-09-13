@@ -116,9 +116,11 @@ final class CaffCommandLineController {
                 throw CaffCommandLineError.authorizationRequired(error.description)
             }
             try ensureAppRunning()
-            RemoteCommandBridge.postRetryProvision()
             _ = try RemoteCommandAuth().loadOrCreateToken()
             RemoteCommandUserAuthorization.recordProvisioningLeaseIfNeeded()
+            // Post retry only after the signing lease exists so a deferred app
+            // receiver that requires hasAnyValidLease() can register handlers.
+            RemoteCommandBridge.postRetryProvision()
             let ticket = try RemoteCommandAuth().issueURLTicket(binding: binding)
             print(ticket)
         case "install-hooks":

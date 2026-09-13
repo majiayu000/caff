@@ -91,10 +91,8 @@ public final class AcceptedNonceStore: @unchecked Sendable {
 
     /// Best-effort snapshot of accepted nonces for remint migration.
     public func exportMap(integrityKey: String) throws -> [String: TimeInterval] {
-        Self.processLock.lock()
-        defer { Self.processLock.unlock() }
-        return try withCrossProcessLock {
-            try loadMap(integrityKey: integrityKey)
+        try withExclusiveAccess { access in
+            try access.exportMap(integrityKey: integrityKey)
         }
     }
 
@@ -103,10 +101,43 @@ public final class AcceptedNonceStore: @unchecked Sendable {
     /// Used when a lease-validated remint retires the prior secret so replay state
     /// survives rotation (retired MACs still check the live map via the new key).
     public func provisionMap(_ map: [String: TimeInterval], integrityKey: String, now: TimeInterval) throws {
+        try withExclusiveAccess { access in
+            try access.provisionMap(map, integrityKey: integrityKey, now: now)
+        }
+    }
+
+    /// Holds process + cross-process nonce locks for the full remint migration window.
+    ///
+    /// Lease-validated remint must snapshot, rotate the live secret, and publish the
+    /// rebound map without releasing this lock — otherwise a concurrent old-key
+    /// consume can land after the snapshot and be dropped from the migrated map
+    /// while the retired key remains accepted.
+    public func withExclusiveAccess<T>(_ body: (ExclusiveAccess) throws -> T) throws -> T {
         Self.processLock.lock()
         defer { Self.processLock.unlock() }
-        try withCrossProcessLock {
-            try saveMap(map.filter { $0.value > now }, integrityKey: integrityKey)
+        return try withCrossProcessLock {
+            try body(ExclusiveAccess(store: self))
+        }
+    }
+
+    /// Unlocked map helpers valid only inside `withExclusiveAccess`.
+    public struct ExclusiveAccess {
+        fileprivate let store: AcceptedNonceStore
+
+        public func exportMap(integrityKey: String) throws -> [String: TimeInterval] {
+            try store.loadMap(integrityKey: integrityKey)
+        }
+
+        public func provisionMap(
+            _ map: [String: TimeInterval],
+            integrityKey: String,
+            now: TimeInterval
+        ) throws {
+            try store.saveMap(map.filter { $0.value > now }, integrityKey: integrityKey)
+        }
+
+        public func provisionEmpty(integrityKey: String) throws {
+            try store.saveMap([:], integrityKey: integrityKey)
         }
     }
 
@@ -581,7 +612,7 @@ public struct RemoteCommandAuth: Sendable {
         if Self.constantTimeEquals(live, attestedToken) {
             return live
         }
-        let retired = try readRetiredTokens(forSlot: liveSlot)
+        let retired = try readRetiredTokens(forSlot: liveSlot, bindingKey: live)
         if retired.contains(where: { Self.constantTimeEquals($0, attestedToken) }) {
             Self.rememberAttestedVerificationSecret(live, slotAccount: liveSlot)
             return live
@@ -590,12 +621,13 @@ public struct RemoteCommandAuth: Sendable {
         return attestedToken
     }
 
-    /// Live secret first, then every still-unexpired retired prior secret (Keychain).
+    /// Live secret first, then every still-unexpired retired prior secret (Keychain)
+    /// whose record authenticates under the live/primary secret.
     private func verificationSecrets(primary: String) throws -> [String] {
         var secrets = [primary]
         guard usesKeychain else { return secrets }
         guard let slot = try Self.readKeychainSlotAccountValue() else { return secrets }
-        for retired in try readRetiredTokens(forSlot: slot) {
+        for retired in try readRetiredTokens(forSlot: slot, bindingKey: primary) {
             if secrets.contains(where: { Self.constantTimeEquals($0, retired) }) {
                 continue
             }
@@ -898,29 +930,28 @@ public struct RemoteCommandAuth: Sendable {
         nonceAccount: String,
         claimAccount: String
     ) throws -> String {
-        // Nonces captured before a lease-validated remint so replay state is rebound
-        // under the replacement secret instead of wiped (retired MACs still consult
-        // the live map via integrityKey = candidates.first).
-        var migratedNonces: [String: TimeInterval]?
-
-        func captureNonceMigration(from token: String) {
-            guard migratedNonces == nil else { return }
-            migratedNonces = try? nonceStore.exportMap(integrityKey: token)
-        }
-
         func rotateRemintingToken(
             _ token: String,
             preserveInFlightSignatures: Bool,
             context: String
-        ) throws {
+        ) throws -> String? {
             if preserveInFlightSignatures {
-                captureNonceMigration(from: token)
+                // Snapshot, delete, mint, rebind nonces, and retire under one nonce
+                // lock so concurrent old-key consumes cannot be lost from the migrated
+                // map. Returns the replacement secret when successful.
+                return try atomicLeaseValidatedRemint(
+                    oldToken: token,
+                    slotAccount: slot.account,
+                    nonceAccount: nonceAccount,
+                    claimAccount: claimAccount,
+                    context: context
+                )
             }
             try deleteKeychainTokenIfMatches(
                 account: slot.account,
                 expected: token,
                 context: context,
-                retirePrior: preserveInFlightSignatures
+                retirePrior: false
             )
             try deleteKeychainNonceIfTokenGoneOrMatches(
                 nonceAccount: nonceAccount,
@@ -929,6 +960,7 @@ public struct RemoteCommandAuth: Sendable {
                 context: "\(context) nonce"
             )
             try scrubMintSeal(forClaimAccount: claimAccount, context: "\(context) mint seal")
+            return nil
         }
 
         if !slot.created {
@@ -954,13 +986,15 @@ public struct RemoteCommandAuth: Sendable {
                         try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub on nonce remint")
                     }
                 case .remint(let preserveInFlightSignatures):
-                    try rotateRemintingToken(
+                    if let replaced = try rotateRemintingToken(
                         existing,
                         preserveInFlightSignatures: preserveInFlightSignatures,
                         context: preserveInFlightSignatures
                             ? "lease-validated slot token rotate"
                             : "preplant slot token rotate"
-                    )
+                    ) {
+                        return replaced
+                    }
                 }
             } else if let corrupt = observed {
                 try deleteKeychainTokenIfMatches(
@@ -994,13 +1028,15 @@ public struct RemoteCommandAuth: Sendable {
                         try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub on winner remint")
                     }
                 case .remint(let preserveInFlightSignatures):
-                    try rotateRemintingToken(
+                    if let replaced = try rotateRemintingToken(
                         winner,
                         preserveInFlightSignatures: preserveInFlightSignatures,
                         context: preserveInFlightSignatures
                             ? "lease-validated winner token rotate"
                             : "winner preplant token rotate"
-                    )
+                    ) {
+                        return replaced
+                    }
                 }
             }
 
@@ -1014,15 +1050,17 @@ public struct RemoteCommandAuth: Sendable {
                     try ensureNonceStore(forToken: leftover, nonceAccount: nonceAccount)
                     return leftover
                 case .remint(let preserveInFlightSignatures):
-                    try rotateRemintingToken(
+                    if let replaced = try rotateRemintingToken(
                         leftover,
                         preserveInFlightSignatures: preserveInFlightSignatures,
                         context: preserveInFlightSignatures
                             ? "lease-validated late winner token rotate"
                             : "late winner preplant token rotate"
-                    )
+                    ) {
+                        return replaced
+                    }
                 }
-            } else if migratedNonces == nil {
+            } else {
                 try deleteKeychainAccount(nonceAccount, context: "corrupt slot nonce remove")
             }
         } else {
@@ -1039,17 +1077,7 @@ public struct RemoteCommandAuth: Sendable {
             // cannot observe a token without its claim (or claim a half-published mint).
             try writeKeychainToken(token, account: slot.account)
             try writeSlotClaim(claimAccount: claimAccount, token: token)
-            if let migrated = migratedNonces {
-                // Rebound prior replay state under the new secret so retired-MAC
-                // verification (integrityKey = live secret) still rejects consumed nonces.
-                try nonceStore.provisionMap(
-                    migrated,
-                    integrityKey: token,
-                    now: now().timeIntervalSince1970
-                )
-            } else {
-                try nonceStore.provisionEmpty(integrityKey: token)
-            }
+            try nonceStore.provisionEmpty(integrityKey: token)
             // Do not publish an HMAC mint seal: peers who plant the token can forge
             // HMAC(token). Cross-process adopt relies on process-local seals; fresh
             // CLI processes remint under a validated lease and rebind that lease.
@@ -1072,6 +1100,84 @@ public struct RemoteCommandAuth: Sendable {
                 }
             }
             throw error
+        }
+    }
+
+    /// Lease-validated remint that holds the nonce lock across snapshot → rotation →
+    /// publication, and only retires the prior secret after the rebound map is saved.
+    private func atomicLeaseValidatedRemint(
+        oldToken: String,
+        slotAccount: String,
+        nonceAccount: String,
+        claimAccount: String,
+        context: String
+    ) throws -> String {
+        try nonceStore.withExclusiveAccess { access in
+            let migrated: [String: TimeInterval]
+            do {
+                migrated = try access.exportMap(integrityKey: oldToken)
+            } catch {
+                // Replay state already gone — rotate without retiring so we never
+                // accept old-key MACs against an empty rebound map.
+                try deleteKeychainTokenIfMatches(
+                    account: slotAccount,
+                    expected: oldToken,
+                    context: "\(context) map-missing rotate",
+                    retirePrior: false
+                )
+                try deleteKeychainNonceIfTokenGoneOrMatches(
+                    nonceAccount: nonceAccount,
+                    tokenAccount: slotAccount,
+                    expectedToken: oldToken,
+                    context: "\(context) map-missing nonce"
+                )
+                try scrubMintSeal(forClaimAccount: claimAccount, context: "\(context) map-missing mint seal")
+                let replacement = Self.provisionedTokenPrefix + (try Self.generateToken())
+                try writeKeychainToken(replacement, account: slotAccount)
+                try writeSlotClaim(claimAccount: claimAccount, token: replacement)
+                try access.provisionEmpty(integrityKey: replacement)
+                try scrubMintSeal(forClaimAccount: claimAccount, context: "\(context) map-missing seal scrub")
+                let sealedKey = claimAccount + "|" + Self.slotClaimValue(forToken: replacement)
+                Self.sealAttestedClaimKey(sealedKey)
+                return replacement
+            }
+
+            // Delete without retiring yet — retirement happens only after migration.
+            try deleteKeychainTokenIfMatches(
+                account: slotAccount,
+                expected: oldToken,
+                context: context,
+                retirePrior: false
+            )
+            try deleteKeychainNonceIfTokenGoneOrMatches(
+                nonceAccount: nonceAccount,
+                tokenAccount: slotAccount,
+                expectedToken: oldToken,
+                context: "\(context) nonce"
+            )
+            try scrubMintSeal(forClaimAccount: claimAccount, context: "\(context) mint seal")
+
+            let replacement = Self.provisionedTokenPrefix + (try Self.generateToken())
+            try writeKeychainToken(replacement, account: slotAccount)
+            try writeSlotClaim(claimAccount: claimAccount, token: replacement)
+            try access.provisionMap(
+                migrated,
+                integrityKey: replacement,
+                now: now().timeIntervalSince1970
+            )
+            // Retire only after the rebound map is durable under the new secret.
+            // Read prior retirements under the old live key, then re-bind under the
+            // replacement so the attestation-chain anchor survives remint churn.
+            try rememberRetiredToken(
+                oldToken,
+                slotAccount: slotAccount,
+                readBindingKey: oldToken,
+                bindingKey: replacement
+            )
+            try scrubMintSeal(forClaimAccount: claimAccount, context: "\(context) seal scrub")
+            let sealedKey = claimAccount + "|" + Self.slotClaimValue(forToken: replacement)
+            Self.sealAttestedClaimKey(sealedKey)
+            return replacement
         }
     }
 
@@ -1806,14 +1912,14 @@ public struct RemoteCommandAuth: Sendable {
     /// Prevents a recovery path from wiping a concurrently published provisioned
     /// token that appeared after our initial miss/corrupt read.
     ///
-    /// When `retirePrior` is true, retains the secret for `signatureMaxAgeSeconds`
-    /// so in-flight MACs still verify. Callers that preserve in-flight signatures
-    /// must also migrate the nonce map; retiring without migration allows replay.
+    /// Retirement of in-flight secrets is handled separately by
+    /// `atomicLeaseValidatedRemint` after the rebound nonce map is durable —
+    /// retiring before migration would accept old-key MACs against an empty map.
     private func deleteKeychainTokenIfMatches(
         account: String,
         expected: String,
         context: String,
-        retirePrior: Bool = true
+        retirePrior: Bool = false
     ) throws {
         guard let current = try readKeychainToken(account: account) else {
             return
@@ -1821,9 +1927,9 @@ public struct RemoteCommandAuth: Sendable {
         guard current == expected else {
             return
         }
-        if retirePrior, Self.isProvisionedToken(expected) {
-            try rememberRetiredToken(expected, slotAccount: account)
-        }
+        // `retirePrior` is retained for call-site clarity but intentionally unused:
+        // callers that preserve in-flight signatures go through atomic remint.
+        _ = retirePrior
         try deleteKeychainAccount(account, context: context)
     }
 
@@ -1831,85 +1937,108 @@ public struct RemoteCommandAuth: Sendable {
         retiredTokenAccountPrefix + slotAccount
     }
 
+    private static func retiredTokenMacMessage(expiresAt: Int, token: String) -> String {
+        "retired-token.v3|\(expiresAt)|\(token)"
+    }
+
     /// Retains `token` for the signature window so verification can accept in-flight
     /// MACs after a lease-validated remint rotates the live secret. Keeps a bounded
     /// set of still-unexpired priors so T0→T1→T2→T3 does not drop T1 while it is live.
-    private func rememberRetiredToken(_ token: String, slotAccount: String) throws {
+    ///
+    /// Entries are HMAC-bound to `bindingKey` (the post-remint live secret) so a
+    /// same-UID peer who knows the slot cannot plant an attacker-known retired
+    /// secret and have `verificationSecrets` accept it. Prior entries are loaded
+    /// under `readBindingKey` (the pre-remint live secret) then re-signed.
+    private func rememberRetiredToken(
+        _ token: String,
+        slotAccount: String,
+        readBindingKey: String,
+        bindingKey: String
+    ) throws {
         let expiresAt = Int(now().timeIntervalSince1970 + Self.signatureMaxAgeSeconds)
-        var entries = try loadRetiredTokenEntries(forSlot: slotAccount)
+        var entries = try loadRetiredTokenEntries(forSlot: slotAccount, bindingKey: readBindingKey)
         let nowTs = now().timeIntervalSince1970
         entries = entries.filter { TimeInterval($0.expiresAt) > nowTs }
         entries.removeAll { Self.constantTimeEquals($0.token, token) }
         entries.append((expiresAt: expiresAt, token: token))
         if entries.count > Self.maxRetiredVerificationSecrets {
-            entries = Array(entries.suffix(Self.maxRetiredVerificationSecrets))
+            // Keep the oldest unexpired entry as the attestation-chain anchor so a
+            // long-lived receiver's process-local attested secret is not dropped while
+            // short-lived CLI remints churn the tail of the list.
+            let anchor = entries[0]
+            let tail = Array(entries.dropFirst().suffix(Self.maxRetiredVerificationSecrets - 1))
+            entries = [anchor] + tail
         }
-        try saveRetiredTokenEntries(entries, forSlot: slotAccount)
+        try saveRetiredTokenEntries(entries, forSlot: slotAccount, bindingKey: bindingKey)
     }
 
-    private func readRetiredTokens(forSlot slotAccount: String) throws -> [String] {
+    private func readRetiredTokens(forSlot slotAccount: String, bindingKey: String) throws -> [String] {
         let nowTs = now().timeIntervalSince1970
-        let all = try loadRetiredTokenEntries(forSlot: slotAccount)
+        let all = try loadRetiredTokenEntries(forSlot: slotAccount, bindingKey: bindingKey)
         let live = all.filter { TimeInterval($0.expiresAt) > nowTs }
         if live.count != all.count {
-            try? saveRetiredTokenEntries(live, forSlot: slotAccount)
+            try? saveRetiredTokenEntries(live, forSlot: slotAccount, bindingKey: bindingKey)
         }
         return live.map(\.token)
     }
 
     private func loadRetiredTokenEntries(
-        forSlot slotAccount: String
+        forSlot slotAccount: String,
+        bindingKey: String
     ) throws -> [(expiresAt: Int, token: String)] {
         let account = Self.retiredTokenAccount(forSlot: slotAccount)
         guard let raw = try readRetiredTokenRaw(account: account) else {
             return []
         }
-        if raw.hasPrefix("v2\n") {
+        if raw.hasPrefix("v3\n") {
             var entries: [(expiresAt: Int, token: String)] = []
             for line in raw.dropFirst(3).split(separator: "\n", omittingEmptySubsequences: true) {
                 let body = String(line)
-                guard let split = body.firstIndex(of: ":") else {
+                let parts = body.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+                guard parts.count == 3,
+                      let expiresAt = Int(parts[0]),
+                      Self.isProvisionedToken(String(parts[1]))
+                else {
                     continue
                 }
-                let expiryRaw = String(body[..<split])
-                let token = String(body[body.index(after: split)...])
-                guard let expiresAt = Int(expiryRaw), Self.isProvisionedToken(token) else {
+                let token = String(parts[1])
+                let mac = String(parts[2])
+                let expected = Self.hmacHex(
+                    key: bindingKey,
+                    message: Self.retiredTokenMacMessage(expiresAt: expiresAt, token: token)
+                )
+                guard Self.constantTimeEquals(mac, expected) else {
+                    // Peer-planted or rebound under a different live secret — ignore.
                     continue
                 }
                 entries.append((expiresAt: expiresAt, token: token))
             }
             return entries
         }
-        // Legacy single-entry payload: v1:<expiresAtSeconds>:<token>
-        guard raw.hasPrefix("v1:") else {
-            try deleteKeychainAccount(account, context: "retired token corrupt remove")
-            return []
-        }
-        let body = String(raw.dropFirst(3))
-        guard let split = body.firstIndex(of: ":") else {
-            try deleteKeychainAccount(account, context: "retired token corrupt remove")
-            return []
-        }
-        let expiryRaw = String(body[..<split])
-        let token = String(body[body.index(after: split)...])
-        guard let expiresAt = Int(expiryRaw), Self.isProvisionedToken(token) else {
-            try deleteKeychainAccount(account, context: "retired token corrupt remove")
-            return []
-        }
-        return [(expiresAt: expiresAt, token: token)]
+        // Legacy v1/v2 payloads are format-only and peer-plantable — never trust them
+        // as verification secrets. Scrub so a planted record cannot linger.
+        try deleteKeychainAccount(account, context: "retired token unauthenticated remove")
+        return []
     }
 
     private func saveRetiredTokenEntries(
         _ entries: [(expiresAt: Int, token: String)],
-        forSlot slotAccount: String
+        forSlot slotAccount: String,
+        bindingKey: String
     ) throws {
         let account = Self.retiredTokenAccount(forSlot: slotAccount)
         if entries.isEmpty {
             try deleteKeychainAccount(account, context: "retired token clear")
             return
         }
-        let body = entries.map { "\($0.expiresAt):\($0.token)" }.joined(separator: "\n")
-        let payload = "v2\n\(body)"
+        let body = entries.map { entry in
+            let mac = Self.hmacHex(
+                key: bindingKey,
+                message: Self.retiredTokenMacMessage(expiresAt: entry.expiresAt, token: entry.token)
+            )
+            return "\(entry.expiresAt):\(entry.token):\(mac)"
+        }.joined(separator: "\n")
+        let payload = "v3\n\(body)"
         guard let data = payload.data(using: .utf8) else {
             throw RemoteCommandAuthError.storageFailed("retired token payload is not UTF-8")
         }

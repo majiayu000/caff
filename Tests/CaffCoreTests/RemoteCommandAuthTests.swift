@@ -343,8 +343,12 @@ private func temporaryAuthDirectory() throws -> URL {
     #expect(try store.consume("nonce-1", expiresAt: expiresAt, now: now, integrityKey: oldKey))
     #expect(try store.consume("nonce-1", expiresAt: expiresAt, now: now, integrityKey: oldKey) == false)
 
-    let migrated = try store.exportMap(integrityKey: oldKey)
-    try store.provisionMap(migrated, integrityKey: newKey, now: now)
+    // Remint migration must hold the nonce lock across snapshot + publish so a
+    // concurrent old-key consume cannot land after export and be dropped.
+    try store.withExclusiveAccess { access in
+        let migrated = try access.exportMap(integrityKey: oldKey)
+        try access.provisionMap(migrated, integrityKey: newKey, now: now)
+    }
 
     // After remint migration, the live (new) integrity key must still reject the
     // already-consumed nonce — the failure mode when remint wiped to an empty map.

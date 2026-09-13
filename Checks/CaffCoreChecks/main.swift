@@ -431,8 +431,10 @@ do {
         integrityKey: oldKey
     )
     check(firstConsume, "first nonce consume under old key should succeed")
-    let migrated = try nonceStore.exportMap(integrityKey: oldKey)
-    try nonceStore.provisionMap(migrated, integrityKey: newKey, now: migrateNow)
+    try nonceStore.withExclusiveAccess { access in
+        let migrated = try access.exportMap(integrityKey: oldKey)
+        try access.provisionMap(migrated, integrityKey: newKey, now: migrateNow)
+    }
     let replayAfterMigrate = try nonceStore.consume(
         "nonce-1",
         expiresAt: migrateExpiry,
