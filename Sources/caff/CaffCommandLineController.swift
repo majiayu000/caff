@@ -54,6 +54,9 @@ final class CaffCommandLineController {
                 reason: "Authorize Caff to start a wake session"
             )
             try ensureAppRunning()
+            // Wake a deferred receiver that skipped launch-time registration before
+            // posting the signed command (authorize-remote / install-hooks already do).
+            RemoteCommandBridge.postRetryProvision()
             try RemoteCommandBridge.post(options)
             Thread.sleep(forTimeInterval: 0.35)
             print("start command sent")
@@ -64,6 +67,7 @@ final class CaffCommandLineController {
                 reason: "Authorize Caff to stop the wake session"
             )
             try ensureAppRunning()
+            RemoteCommandBridge.postRetryProvision()
             try RemoteCommandBridge.post([RemoteCommandBridge.Key.action: "stop"])
             Thread.sleep(forTimeInterval: 0.35)
             print("stop command sent")
@@ -74,6 +78,7 @@ final class CaffCommandLineController {
                 reason: "Authorize Caff to refresh agent activity"
             )
             try ensureAppRunning()
+            RemoteCommandBridge.postRetryProvision()
             try RemoteCommandBridge.post(options)
             Thread.sleep(forTimeInterval: 0.35)
             print("agent touch sent")
@@ -232,8 +237,11 @@ final class CaffCommandLineController {
             return options
         case "stop":
             try rejectUnexpectedOptions(rest)
+            // URL opens do not inject source for stop (only start defaults to `url`).
+            // Keep the binding source-free so it matches `caff://stop` authentication.
             return [RemoteCommandBridge.Key.action: "stop"]
         case "agent-touch":
+            // URL opens do not inject `source` for agent-touch; bind only caller fields.
             return try parseAgentTouchOptions(rest)
         default:
             throw CaffCommandLineError.unknownCommand("remote-token \(action)")

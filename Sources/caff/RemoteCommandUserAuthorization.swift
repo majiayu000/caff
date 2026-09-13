@@ -35,6 +35,9 @@ enum RemoteCommandUserAuthorization {
     /// rebinds only the originating scope (agent-touch must not promote to signing).
     private static let validatedScopeLock = NSLock()
     private static var validatedProvisioningScopes: Set<Scope> = []
+    /// Absolute expiries of leases validated this process. Remint rebinds must reuse
+    /// these timestamps — never grant a fresh 12h/30d window without LocalAuthentication.
+    private static var validatedLeaseExpiries: [Scope: TimeInterval] = [:]
 
     enum Error: Swift.Error, CustomStringConvertible {
         case denied
@@ -66,7 +69,8 @@ enum RemoteCommandUserAuthorization {
         if try hasValidLease(for: scope, now: now) {
             // Remember which scope authorized this process so a remint during sign()
             // can rebind the same lease (agent-touch must not promote to signing).
-            noteValidatedProvisioningScope(scope)
+            let expiry = try validatedLeaseExpiry(for: scope, now: now)
+            noteValidatedProvisioningScope(scope, expiry: expiry)
             return
         }
         try authenticateUser(reason: reason)
@@ -122,10 +126,10 @@ enum RemoteCommandUserAuthorization {
             // collapsed into signing via the agent-touch→signing superset rule.
             let timestamp = now.timeIntervalSince1970
             if let expiresAt = try readLeaseExpiresAt(scope: .signing), expiresAt > timestamp {
-                noteValidatedProvisioningScope(.signing)
+                noteValidatedProvisioningScope(.signing, expiry: expiresAt)
             }
             if let expiresAt = try readLeaseExpiresAt(scope: .agentTouch), expiresAt > timestamp {
-                noteValidatedProvisioningScope(.agentTouch)
+                noteValidatedProvisioningScope(.agentTouch, expiry: expiresAt)
             }
         } catch {
             // Best-effort: token load will fall back to attestation/remint.
@@ -149,10 +153,11 @@ enum RemoteCommandUserAuthorization {
             // Presence was just proven for remint; keep it noted through writeLease's
             // loadOrCreateToken so we do not re-enter attestation.
             RemoteCommandAuth.noteRecentUserPresence()
-            try writeLease(
-                scope: scope,
-                expiresAt: now.addingTimeInterval(seconds).timeIntervalSince1970
-            )
+            // Rebind to the original absolute expiry when a validated lease authorized
+            // this remint. A fresh full-duration window would let frequent hooks renew
+            // agent-touch authorization indefinitely without LocalAuthentication.
+            let expiresAt = takeValidatedLeaseExpiry(scope) ?? now.addingTimeInterval(seconds).timeIntervalSince1970
+            try writeLease(scope: scope, expiresAt: expiresAt)
         } catch {
             // Best-effort — next launch may re-attest.
         }
@@ -176,10 +181,42 @@ enum RemoteCommandUserAuthorization {
         return false
     }
 
-    private static func noteValidatedProvisioningScope(_ scope: Scope) {
+    private static func noteValidatedProvisioningScope(_ scope: Scope, expiry: TimeInterval? = nil) {
         validatedScopeLock.lock()
         validatedProvisioningScopes.insert(scope)
+        if let expiry {
+            validatedLeaseExpiries[scope] = expiry
+        } else {
+            // Fresh LocalAuthentication — do not reuse a previously observed expiry.
+            validatedLeaseExpiries.removeValue(forKey: scope)
+        }
         validatedScopeLock.unlock()
+    }
+
+    private static func takeValidatedLeaseExpiry(_ scope: Scope) -> TimeInterval? {
+        validatedScopeLock.lock()
+        defer { validatedScopeLock.unlock() }
+        return validatedLeaseExpiries.removeValue(forKey: scope)
+    }
+
+    /// Absolute expiry of the lease that currently satisfies `scope`, if any.
+    private static func validatedLeaseExpiry(for scope: Scope, now: Date) throws -> TimeInterval? {
+        let timestamp = now.timeIntervalSince1970
+        switch scope {
+        case .signing:
+            if let expiresAt = try readLeaseExpiresAt(scope: .signing), expiresAt > timestamp {
+                return expiresAt
+            }
+            return nil
+        case .agentTouch:
+            if let expiresAt = try readLeaseExpiresAt(scope: .agentTouch), expiresAt > timestamp {
+                return expiresAt
+            }
+            if let expiresAt = try readLeaseExpiresAt(scope: .signing), expiresAt > timestamp {
+                return expiresAt
+            }
+            return nil
+        }
     }
 
     /// Prefer signing when both were valid; otherwise the sole observed scope;
@@ -188,13 +225,28 @@ enum RemoteCommandUserAuthorization {
         validatedScopeLock.lock()
         let scopes = validatedProvisioningScopes
         validatedProvisioningScopes.removeAll()
-        validatedScopeLock.unlock()
+        // Keep the expiry entry for the scope we return; drop the other.
+        let signingExpiry = validatedLeaseExpiries.removeValue(forKey: .signing)
+        let agentExpiry = validatedLeaseExpiries.removeValue(forKey: .agentTouch)
         if scopes.contains(.signing) {
+            if let signingExpiry {
+                validatedLeaseExpiries[.signing] = signingExpiry
+            } else if let agentExpiry {
+                validatedLeaseExpiries[.signing] = agentExpiry
+            }
+            validatedScopeLock.unlock()
             return .signing
         }
         if scopes.contains(.agentTouch) {
+            if let agentExpiry {
+                validatedLeaseExpiries[.agentTouch] = agentExpiry
+            } else if let signingExpiry {
+                validatedLeaseExpiries[.agentTouch] = signingExpiry
+            }
+            validatedScopeLock.unlock()
             return .agentTouch
         }
+        validatedScopeLock.unlock()
         return .signing
     }
 
