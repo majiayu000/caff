@@ -11,11 +11,12 @@ enum CaffCommandLineError: Error, CustomStringConvertible {
     case cannotStartApp
     case statusUnavailable
     case invalidHookTarget(String)
+    case authorizationRequired(String)
 
     var description: String {
         switch self {
         case .missingCommand:
-            return "Missing command. Use: caff start|stop|status|agent-touch|install-hooks|remove-hooks"
+            return "Missing command. Use: caff start|stop|status|agent-touch|install-hooks|remove-hooks|authorize-remote|remote-token"
         case let .missingValue(option):
             return "Missing value for \(option)"
         case let .unknownCommand(command):
@@ -28,6 +29,8 @@ enum CaffCommandLineError: Error, CustomStringConvertible {
             return "Caff status is unavailable"
         case let .invalidHookTarget(value):
             return "Invalid hook target: \(value). Use codex, claude, or all"
+        case let .authorizationRequired(message):
+            return message
         }
     }
 }
@@ -44,24 +47,47 @@ final class CaffCommandLineController {
         switch command {
         case "start":
             let options = try parseStartOptions(rest)
+            try authorizeRemoteSigning(reason: "Authorize Caff to start a wake session")
             try ensureAppRunning()
             try RemoteCommandBridge.post(options)
             Thread.sleep(forTimeInterval: 0.35)
             print("start command sent")
         case "stop":
             try rejectUnexpectedOptions(rest)
+            try authorizeRemoteSigning(reason: "Authorize Caff to stop the wake session")
             try ensureAppRunning()
             try RemoteCommandBridge.post([RemoteCommandBridge.Key.action: "stop"])
             Thread.sleep(forTimeInterval: 0.35)
             print("stop command sent")
         case "agent-touch":
             let options = try parseAgentTouchOptions(rest)
+            try authorizeRemoteSigning(reason: "Authorize Caff to refresh agent activity")
             try ensureAppRunning()
             try RemoteCommandBridge.post(options)
             Thread.sleep(forTimeInterval: 0.35)
             print("agent touch sent")
+        case "authorize-remote":
+            try rejectUnexpectedOptions(rest)
+            try RemoteCommandUserAuthorization.authorize(
+                reason: "Authorize Caff remote-control CLI signing for this Mac",
+                leaseSeconds: RemoteCommandUserAuthorization.defaultLeaseSeconds
+            )
+            print("remote-control signing authorized")
+        case "remote-token":
+            try rejectUnexpectedOptions(rest)
+            try RemoteCommandUserAuthorization.ensureAuthorized(
+                reason: "Authorize Caff to reveal the remote-control install token"
+            )
+            let token = try RemoteCommandAuth().loadOrCreateToken()
+            print(token)
         case "install-hooks":
             let options = try parseHookOptions(rest, allowCooldown: true)
+            // Explicit user action: mint a longer lease so subsequent agent-touch hooks
+            // can sign without turning every agent event into an auth prompt.
+            try RemoteCommandUserAuthorization.authorize(
+                reason: "Authorize Caff agent-touch hooks to sign remote commands",
+                leaseSeconds: RemoteCommandUserAuthorization.hookLeaseSeconds
+            )
             let changes = try hookManager(cooldownSeconds: options.cooldownSeconds).install(targets: options.targets)
             printHookChanges(changes)
         case "remove-hooks":
@@ -75,6 +101,14 @@ final class CaffCommandLineController {
             try printStatus()
         default:
             throw CaffCommandLineError.unknownCommand(command)
+        }
+    }
+
+    private func authorizeRemoteSigning(reason: String) throws {
+        do {
+            try RemoteCommandUserAuthorization.ensureAuthorized(reason: reason)
+        } catch let error as RemoteCommandUserAuthorization.Error {
+            throw CaffCommandLineError.authorizationRequired(error.description)
         }
     }
 

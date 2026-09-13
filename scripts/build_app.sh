@@ -59,6 +59,10 @@ cat > "$app_dir/Contents/Info.plist" <<PLIST
 PLIST
 
 plutil -lint "$app_dir/Contents/Info.plist"
-codesign --force --deep --sign - "$app_dir"
+# Prefer a stable Developer ID / Apple Development identity when provided so
+# Keychain ACLs created via SecTrustedApplication survive binary-changing upgrades.
+# Ad-hoc (`-`) remains the local default; ACL read failures rotate the secret.
+codesign_identity="${CAFF_CODESIGN_IDENTITY:--}"
+codesign --force --deep --sign "$codesign_identity" "$app_dir"
 codesign --verify --deep --strict "$app_dir"
 echo "$app_dir"

@@ -4,6 +4,10 @@ import CaffCore
 extension AppDelegate {
     @objc func installAgentHooks() {
         do {
+            try RemoteCommandUserAuthorization.authorize(
+                reason: "Authorize Caff agent-touch hooks to sign remote commands",
+                leaseSeconds: RemoteCommandUserAuthorization.hookLeaseSeconds
+            )
             let changes = try hookManager().install()
             hookManagementStatus = .updated(targets: updatedHookTargets(changes))
             hookManagementStatusLabel.stringValue = hookManagementStatus.localizedText(text)

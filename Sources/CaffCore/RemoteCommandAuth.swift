@@ -32,8 +32,11 @@ private final class AcceptedNonceStore: @unchecked Sendable {
         case keychain
     }
 
+    /// Shared across store instances in-process; paired with a flock for cross-process races.
+    private static let processLock = NSLock()
+
     private let backend: Backend
-    private let lock = NSLock()
+    private let lockFileURL: URL
 
     init(directoryURL: URL, usesKeychain: Bool) {
         if usesKeychain {
@@ -43,22 +46,45 @@ private final class AcceptedNonceStore: @unchecked Sendable {
                 directoryURL.appendingPathComponent(RemoteCommandAuth.nonceFileName, isDirectory: false)
             )
         }
+        self.lockFileURL = directoryURL.appendingPathComponent(
+            RemoteCommandAuth.nonceLockFileName,
+            isDirectory: false
+        )
     }
 
     /// Returns `true` when `nonce` is newly recorded; `false` when it was already consumed.
     func consume(_ nonce: String, expiresAt: TimeInterval, now: TimeInterval, integrityKey: String) throws -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
+        Self.processLock.lock()
+        defer { Self.processLock.unlock() }
 
-        var expiresAtByNonce = try loadMap(integrityKey: integrityKey)
-        expiresAtByNonce = expiresAtByNonce.filter { $0.value > now }
-        if expiresAtByNonce[nonce] != nil {
+        return try withCrossProcessLock {
+            var expiresAtByNonce = try loadMap(integrityKey: integrityKey)
+            expiresAtByNonce = expiresAtByNonce.filter { $0.value > now }
+            if expiresAtByNonce[nonce] != nil {
+                try saveMap(expiresAtByNonce, integrityKey: integrityKey)
+                return false
+            }
+            expiresAtByNonce[nonce] = expiresAt
             try saveMap(expiresAtByNonce, integrityKey: integrityKey)
-            return false
+            return true
         }
-        expiresAtByNonce[nonce] = expiresAt
-        try saveMap(expiresAtByNonce, integrityKey: integrityKey)
-        return true
+    }
+
+    private func withCrossProcessLock<T>(_ body: () throws -> T) throws -> T {
+        try FileManager.default.createDirectory(
+            at: lockFileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let fd = open(lockFileURL.path, O_RDWR | O_CREAT, 0o600)
+        guard fd >= 0 else {
+            throw RemoteCommandAuthError.storageFailed("nonce lock open failed (\(errno))")
+        }
+        defer { close(fd) }
+        guard flock(fd, LOCK_EX) == 0 else {
+            throw RemoteCommandAuthError.storageFailed("nonce lock flock failed (\(errno))")
+        }
+        defer { _ = flock(fd, LOCK_UN) }
+        return try body()
     }
 
     private func loadMap(integrityKey: String) throws -> [String: TimeInterval] {
@@ -263,10 +289,12 @@ private final class AcceptedNonceStore: @unchecked Sendable {
 /// files under Application Support. Explicit `directoryURL` (tests) keeps the legacy
 /// file store with HMAC-bound nonce persistence. CLI/DNC callers never broadcast the
 /// reusable secret; they attach a short-lived HMAC instead. URL callers may still pass
-/// `token=` after reading the secret via `loadOrCreateToken()` / Keychain.
+/// `token=` after obtaining it via the authorized `caff remote-token` command (Keychain
+/// ACL prevents silent in-process reads by other executables).
 public struct RemoteCommandAuth: Sendable {
     public static let tokenFileName = "remote-command.token"
     public static let nonceFileName = "remote-command.nonces"
+    public static let nonceLockFileName = "remote-command.nonces.lock"
     public static let tokenByteCount = 32
     public static let signatureMaxAgeSeconds: TimeInterval = 120
     public static let keychainService = "local.caff.remote-command"
@@ -427,6 +455,22 @@ public struct RemoteCommandAuth: Sendable {
         if status == errSecItemNotFound {
             return nil
         }
+        // Ad-hoc codesign identities change across upgrades, so the previous executable-
+        // scoped ACL may reject the replacement binary. Rotate rather than hang on an
+        // interactive Keychain prompt that breaks unattended CLI/hooks.
+        if status == errSecAuthFailed || status == errSecInteractionNotAllowed {
+            _ = SecItemDelete([
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: Self.keychainService,
+                kSecAttrAccount as String: Self.keychainAccount,
+            ] as CFDictionary)
+            _ = SecItemDelete([
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: Self.keychainService,
+                kSecAttrAccount as String: Self.keychainNonceAccount,
+            ] as CFDictionary)
+            return nil
+        }
         guard status == errSecSuccess else {
             throw RemoteCommandAuthError.storageFailed("keychain read failed (\(status))")
         }
@@ -476,7 +520,7 @@ public struct RemoteCommandAuth: Sendable {
         }
     }
 
-    static func makeExecutableScopedAccess(descriptor: String) throws -> SecAccess {
+    public static func makeExecutableScopedAccess(descriptor: String) throws -> SecAccess {
         var trustedApp: SecTrustedApplication?
         let trustedStatus = SecTrustedApplicationCreateFromPath(nil, &trustedApp)
         guard trustedStatus == errSecSuccess, let trustedApp else {
@@ -499,14 +543,21 @@ public struct RemoteCommandAuth: Sendable {
 
     private func removeLegacyTokenFileIfPresent() throws {
         let path = tokenFileURL.path
-        if FileManager.default.fileExists(atPath: path) {
-            do {
-                try FileManager.default.removeItem(at: tokenFileURL)
-            } catch {
-                throw RemoteCommandAuthError.storageFailed(
-                    "failed to remove legacy token file: \(error.localizedDescription)"
-                )
-            }
+        guard FileManager.default.fileExists(atPath: path) else {
+            return
+        }
+        do {
+            try FileManager.default.removeItem(at: tokenFileURL)
+        } catch CocoaError.fileNoSuchFile {
+            // Concurrent cleaner already removed it — treat as success.
+            return
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain
+            && error.code == NSFileNoSuchFileError {
+            return
+        } catch {
+            throw RemoteCommandAuthError.storageFailed(
+                "failed to remove legacy token file: \(error.localizedDescription)"
+            )
         }
     }
 
@@ -658,10 +709,21 @@ public struct RemoteCommandAuth: Sendable {
         return bytes.map { String(format: "%02x", $0) }.joined()
     }
 
+    /// Length-aware JSON encoding so values containing `=` / newlines cannot be
+    /// repartitioned into adjacent keys without changing the MAC input.
     static func canonicalMessage(_ userInfo: [String: String]) -> String {
-        userInfo.keys.sorted().map { key in
-            "\(key)=\(userInfo[key] ?? "")"
-        }.joined(separator: "\n")
+        let object = userInfo as [String: Any]
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+              let encoded = String(data: data, encoding: .utf8)
+        else {
+            // Extremely defensive fallback — still length-prefixed per field.
+            return userInfo.keys.sorted().map { key in
+                let value = userInfo[key] ?? ""
+                return "\(key.utf8.count):\(key)=\(value.utf8.count):\(value)"
+            }.joined(separator: "\n")
+        }
+        return encoded
     }
 
     static func hmacHex(key: String, message: String) -> String {

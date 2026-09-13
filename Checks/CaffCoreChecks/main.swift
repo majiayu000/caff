@@ -338,6 +338,22 @@ do {
         check(error == .invalidToken, "remote auth should report invalid mac")
     }
 
+    let structured = try auth.sign([
+        "action": "start",
+        "displayAwake": "true",
+        "minutes": "30",
+    ])
+    try auth.authenticate(structured)
+    var colliding = structured
+    colliding["displayAwake"] = "true\nminutes=30"
+    colliding.removeValue(forKey: "minutes")
+    do {
+        try auth.verifySignedPayload(colliding)
+        failures.append("remote auth should reject newline field repartition")
+    } catch let error as RemoteCommandAuthError {
+        check(error == .invalidToken, "remote auth should reject newline field repartition")
+    }
+
     let emptyTokenDirectory = FileManager.default.temporaryDirectory
         .appendingPathComponent("caff-core-checks-auth-empty-\(UUID().uuidString)", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: emptyTokenDirectory) }

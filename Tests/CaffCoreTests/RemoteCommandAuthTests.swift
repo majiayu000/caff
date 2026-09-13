@@ -211,6 +211,29 @@ private func temporaryAuthDirectory() throws -> URL {
     }
 }
 
+@Test func remoteCommandAuthCanonicalMessageResistsFieldInjection() throws {
+    let directory = try temporaryAuthDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let auth = RemoteCommandAuth(directoryURL: directory)
+    let honest = try auth.sign([
+        "action": "start",
+        "displayAwake": "true",
+        "minutes": "30",
+    ])
+    try auth.verifySignedPayload(honest)
+
+    // Under naive `key=value\n` joining, moving `minutes` into `displayAwake` preserves the
+    // MAC input. Structured JSON canonicalization must reject that repartition.
+    var colliding = honest
+    colliding["displayAwake"] = "true\nminutes=30"
+    colliding.removeValue(forKey: "minutes")
+    let rejected = #expect(throws: RemoteCommandAuthError.self) {
+        try auth.verifySignedPayload(colliding)
+    }
+    #expect(rejected == .invalidToken)
+}
+
 @Test func remoteCommandAuthRecoversEmptyTokenFile() throws {
     let directory = try temporaryAuthDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }

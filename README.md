@@ -151,21 +151,33 @@ Caff persists menu bar density and launch behavior. The menu bar can show icon-o
 
 ## CLI and URL Control
 
-The same executable accepts `start`, `stop`, `status`, `agent-touch`, `install-hooks`, and `remove-hooks` commands. `start` supports `--minutes`, `--reason`, `--display-awake`, and `--source`; `status` prints the latest Caff app snapshot, including source, requested assertions, reason, timestamps, display-awake state, agent cooldown state, the last received agent-touch event, and errors. The app bundle registers URL commands for equivalent control:
+The same executable accepts `start`, `stop`, `status`, `agent-touch`, `install-hooks`, `remove-hooks`, `authorize-remote`, and `remote-token` commands. `start` supports `--minutes`, `--reason`, `--display-awake`, and `--source`; `status` prints the latest Caff app snapshot, including source, requested assertions, reason, timestamps, display-awake state, agent cooldown state, the last received agent-touch event, and errors. The app bundle registers URL commands for equivalent control:
 
 - `caff://start?minutes=30&reason=agent&token=<install-token>`
 - `caff://stop?token=<install-token>`
 - `caff://agent-touch?source=codex&cooldownSeconds=1800&token=<install-token>`
 
-Remote control over DistributedNotificationCenter and `caff://` URLs requires a per-install shared secret stored in the login Keychain (`service=local.caff.remote-command`, ACL limited to the Caff executable) rather than a same-UID-readable Application Support file. The secret is created at app launch and by the CLI via `RemoteCommandAuth.loadOrCreateToken()` (legacy Application Support token files are deleted and replaced with a freshly generated Keychain secret, never trusted as provenance). CLI/`agent-touch` posts over DNC use a short-lived HMAC (`mac`/`nonce`/`ts`) derived from that secret and never broadcast the reusable token; accepted nonces are persisted in a Keychain-backed cache until expiry so peers cannot reset replay state by deleting an Application Support file, and restarts cannot replay a captured payload inside the 120s window. URL callers must include a matching `token` query parameter (obtain via `loadOrCreateToken()` in-process from the Caff executable); missing or wrong credentials are rejected before start/stop/agent-touch runs, while token-storage failures surface as normal errors.
+Remote control over DistributedNotificationCenter and `caff://` URLs requires a per-install shared secret stored in the login Keychain (`service=local.caff.remote-command`, ACL limited to the Caff executable) rather than a same-UID-readable Application Support file. The secret is created at app launch and by authorized CLI paths via `RemoteCommandAuth.loadOrCreateToken()` (legacy Application Support token files are deleted and replaced with a freshly generated Keychain secret, never trusted as provenance). CLI/`agent-touch` posts over DNC use a short-lived HMAC (`mac`/`nonce`/`ts`) derived from that secret and never broadcast the reusable token; accepted nonces are persisted in a Keychain-backed cache until expiry so peers cannot reset replay state by deleting an Application Support file, and restarts cannot replay a captured payload inside the 120s window.
+
+Signing those CLI DNC payloads also requires user authorization (`LocalAuthentication`) so a same-UID peer cannot silently use the trusted executable as a signing oracle. Run `caff authorize-remote` (or `caff install-hooks`, which authorizes a longer agent-touch lease) once; subsequent `start`/`stop`/`agent-touch` reuse the Keychain lease until it expires. URL callers must include a matching `token` query parameter obtained via `caff remote-token` (same user-authorization gate); do not expect another process to call `loadOrCreateToken()` against the executable-scoped Keychain item. Missing or wrong credentials are rejected before start/stop/agent-touch runs, while token-storage failures surface as normal errors.
+
+Release builds should sign with a stable identity (`CAFF_CODESIGN_IDENTITY=... ./scripts/build_app.sh`) so Keychain ACLs continue to recognize the upgraded binary. Ad-hoc local builds (`codesign --sign -`) rotate the Keychain secret when an ACL from a previous binary rejects the replacement, avoiding stuck interactive prompts.
 
 For long-running interactive agent CLIs, `agent-touch` refreshes a last-activity cooldown without relying on the `codex` or `claude` process exiting:
 
 ```bash
+caff authorize-remote   # once per lease window, or rely on install-hooks
 caff agent-touch --source codex --cooldown-seconds 1800
 ```
 
 Hook the agent events that fire during a turn to run that command. For Claude Code, use `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop`; for Codex, use the supported hook events in your `hooks.json`, such as `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop`. Caff keeps the Mac awake until 30 minutes after the latest agent event, then releases the assertion so macOS can follow its normal sleep policy.
+
+Obtain a token for scripted `caff://` URLs with:
+
+```bash
+token="$(caff remote-token)"
+open "caff://start?minutes=30&reason=agent&token=${token}"
+```
 
 If you run from the generated app bundle, the executable path is:
 
