@@ -163,6 +163,19 @@ enum RemoteCommandUserAuthorization {
         try deleteKeychainItem(account: scope.rawValue, context: "lease revoke")
     }
 
+    /// True when any HMAC-valid lease is present (signing or agent-touch).
+    /// Used for quiet deferred receiver registration — never prompts.
+    static func hasAnyValidLease(now: Date = Date()) -> Bool {
+        let timestamp = now.timeIntervalSince1970
+        if let expiresAt = try? readLeaseExpiresAt(scope: .signing), expiresAt > timestamp {
+            return true
+        }
+        if let expiresAt = try? readLeaseExpiresAt(scope: .agentTouch), expiresAt > timestamp {
+            return true
+        }
+        return false
+    }
+
     private static func noteValidatedProvisioningScope(_ scope: Scope) {
         validatedScopeLock.lock()
         validatedProvisioningScopes.insert(scope)

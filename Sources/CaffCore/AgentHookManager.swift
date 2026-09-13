@@ -88,17 +88,16 @@ public struct AgentHookManager {
     /// Returns true when any managed Caff `agent-touch` hooks remain for `targets`.
     ///
     /// Each target is inspected independently: a malformed/unreadable config for one
-    /// agent does not prevent detecting managed hooks on another. When every target
-    /// fails to read, the last error is thrown so callers can treat the scan as
-    /// inconclusive instead of “no hooks.”
+    /// agent does not prevent detecting managed hooks on another. When any target
+    /// fails to read and no managed hook was found on readable targets, the last
+    /// error is thrown so callers treat the scan as inconclusive (an uninspected
+    /// target may still contain a surviving hook) instead of “no hooks.”
     public func hasManagedHooks(targets: [AgentHookTarget] = AgentHookTarget.allCases) throws -> Bool {
         var lastError: Error?
-        var sawReadableTarget = false
         for target in targets {
             let root: [String: Any]
             do {
                 root = try readConfig(at: configURL(for: target))
-                sawReadableTarget = true
             } catch {
                 lastError = error
                 continue
@@ -125,7 +124,7 @@ public struct AgentHookManager {
                 }
             }
         }
-        if !sawReadableTarget, let lastError {
+        if let lastError {
             throw lastError
         }
         return false

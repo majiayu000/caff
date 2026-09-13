@@ -1197,9 +1197,18 @@ public struct RemoteCommandAuth: Sendable {
     /// Deletes a lock item, optionally only when it still contains `expectedPayload`.
     ///
     /// Stale reclaim must not erase a successor's lock after a concurrent recoverer
-    /// already deleted the inspected payload and acquired a replacement.
+    /// already deleted the inspected payload and acquired a replacement. Exclusive
+    /// reclaim fences keyed by the inspected payload serialize recoverers so only
+    /// one may delete that generation.
     private static func forceReleaseKeychainLock(account: String, expectedPayload: String? = nil) throws {
         if let expectedPayload {
+            let fenceAccount = reclaimFenceAccount(for: account, expectedPayload: expectedPayload)
+            guard try tryAcquireReclaimFence(account: fenceAccount) else {
+                // Another recoverer owns (or already finished) this payload reclaim.
+                return
+            }
+            defer { try? releaseReclaimFence(account: fenceAccount) }
+
             let query: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: keychainService,
@@ -1225,6 +1234,112 @@ public struct RemoteCommandAuth: Sendable {
                 }
             }
         }
+        let status = SecItemDelete([
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: account,
+        ] as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw RemoteCommandAuthError.storageFailed("keychain lock release failed (\(status))")
+        }
+    }
+
+    /// Fence account unique to `(lock account, inspected payload)` so concurrent
+    /// recoverers of the same dead lock serialize, and a recoverer of payload P
+    /// cannot delete successor lock Q.
+    private static func reclaimFenceAccount(for account: String, expectedPayload: String) -> String {
+        let digest = SHA256.hash(data: Data(expectedPayload.utf8))
+        let hex = digest.prefix(16).map { String(format: "%02x", $0) }.joined()
+        return "\(account).reclaim.\(hex)"
+    }
+
+    /// Exclusive create of a reclaim fence. Returns false when another live reclaim
+    /// already holds the fence for this payload generation.
+    private static func tryAcquireReclaimFence(account: String) throws -> Bool {
+        let access = try makeExecutableScopedAccess(descriptor: "Caff keychain lock reclaim fence")
+        let payload = keychainLockPayload(expiresAt: Date().timeIntervalSince1970 + keychainLockTTL)
+        guard let data = payload.data(using: .utf8) else {
+            throw RemoteCommandAuthError.storageFailed("reclaim fence payload is not UTF-8")
+        }
+        for _ in 0..<8 {
+            var addQuery: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: keychainService,
+                kSecAttrAccount as String: account,
+                kSecAttrLabel as String: "Caff keychain lock reclaim fence",
+                kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+                kSecAttrAccess as String: access,
+                kSecValueData as String: data,
+            ]
+            var status = SecItemAdd(addQuery as CFDictionary, nil)
+            if status == errSecParam {
+                addQuery.removeValue(forKey: kSecAttrAccessible as String)
+                status = SecItemAdd(addQuery as CFDictionary, nil)
+            }
+            if status == errSecSuccess {
+                return true
+            }
+            if status != errSecDuplicateItem {
+                throw RemoteCommandAuthError.storageFailed("reclaim fence acquire failed (\(status))")
+            }
+            // Dead fence holder — reclaim without taking another fence, then retry.
+            if try reclaimStaleReclaimFenceIfNeeded(account: account) {
+                continue
+            }
+            return false
+        }
+        return false
+    }
+
+    private static func reclaimStaleReclaimFenceIfNeeded(account: String) throws -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound {
+            return true
+        }
+        if status == errSecAuthFailed || status == errSecInteractionNotAllowed {
+            try forceReleaseKeychainLockUnfenced(account: account)
+            return true
+        }
+        guard status == errSecSuccess,
+              let data = item as? Data,
+              let raw = String(data: data, encoding: .utf8)
+        else {
+            return false
+        }
+        guard let parsed = parseKeychainLockPayload(raw) else {
+            try forceReleaseKeychainLockUnfenced(account: account)
+            return true
+        }
+        if isProcessAlive(parsed.pid) {
+            if parsed.startSec != 0 || parsed.startUsec != 0,
+               let liveStart = processStartTime(parsed.pid),
+               liveStart.sec == parsed.startSec,
+               liveStart.usec == parsed.startUsec {
+                return false
+            }
+            if parsed.startSec == 0 && parsed.startUsec == 0 {
+                return false
+            }
+        }
+        try forceReleaseKeychainLockUnfenced(account: account)
+        return true
+    }
+
+    private static func releaseReclaimFence(account: String) throws {
+        try forceReleaseKeychainLockUnfenced(account: account)
+    }
+
+    /// Unconditional delete used for reclaim fences (must not take another fence).
+    private static func forceReleaseKeychainLockUnfenced(account: String) throws {
         let status = SecItemDelete([
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,

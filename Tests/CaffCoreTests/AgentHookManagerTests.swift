@@ -91,6 +91,27 @@ import Testing
     #expect(try manager.hasManagedHooks(targets: [.claude]) == true)
 }
 
+@Test func agentHookManagerTreatsPartialUnreadableScanWithoutHooksAsInconclusive() throws {
+    let home = FileManager.default.temporaryDirectory
+        .appendingPathComponent("caff-hook-inconclusive-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: home) }
+
+    let manager = AgentHookManager(
+        homeDirectory: home,
+        executablePath: "/Applications/Caff.app/Contents/MacOS/Caff",
+        cooldownSeconds: 60
+    )
+
+    // Claude absent → empty readable config. Codex unreadable → must not report "no hooks".
+    let codexURL = home.appendingPathComponent(".codex/hooks.json")
+    try FileManager.default.createDirectory(at: codexURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("not-json".utf8).write(to: codexURL)
+
+    #expect(throws: AgentHookManagerError.self) {
+        _ = try manager.hasManagedHooks()
+    }
+}
+
 private func readJSON(_ url: URL) throws -> [String: Any] {
     let data = try Data(contentsOf: url)
     return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])

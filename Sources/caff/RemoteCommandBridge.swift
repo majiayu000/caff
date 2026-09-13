@@ -4,6 +4,9 @@ import Foundation
 enum RemoteCommandBridge {
     static let bundleIdentifier = "local.caff"
     static let notificationName = Notification.Name("local.caff.remote-command")
+    /// Posted after a trusted CLI provision (authorize-remote / install-hooks) so a
+    /// live app that cancelled launch-time attestation can register receivers.
+    static let retryProvisionNotificationName = Notification.Name("local.caff.remote-control.retry-provision")
 
     enum Key {
         static let action = "action"
@@ -18,6 +21,17 @@ enum RemoteCommandBridge {
         static let mac = RemoteCommandAuth.PayloadKey.mac
         static let nonce = RemoteCommandAuth.PayloadKey.nonce
         static let timestamp = RemoteCommandAuth.PayloadKey.timestamp
+    }
+
+    /// Asks a running app to retry remote-control handler registration after a
+    /// trusted lease was written. Safe to post when no app is listening.
+    static func postRetryProvision() {
+        DistributedNotificationCenter.default().postNotificationName(
+            retryProvisionNotificationName,
+            object: bundleIdentifier,
+            userInfo: nil,
+            deliverImmediately: true
+        )
     }
 
     /// Signs the payload with a short-lived HMAC and posts over DNC without broadcasting the reusable token.

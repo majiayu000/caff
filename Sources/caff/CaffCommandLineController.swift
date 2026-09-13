@@ -84,16 +84,25 @@ final class CaffCommandLineController {
                 reason: "Authorize Caff remote-control CLI signing for this Mac",
                 leaseSeconds: RemoteCommandUserAuthorization.defaultLeaseSeconds
             )
+            // Wake/notify a live app so a prior cancelled launch-time provision can
+            // register DNC/URL handlers now that a trusted lease exists. Do not fail
+            // authorization if the GUI cannot start; the next app launch still remints.
+            do {
+                try ensureAppRunning()
+            } catch {
+                fputs("Caff could not start the app after authorize-remote: \(error)\n", stderr)
+            }
+            RemoteCommandBridge.postRetryProvision()
             print("remote-control signing authorized")
         case "remote-token":
             let binding = try parseRemoteTokenBinding(rest)
             // Issue a short-lived single-use URL ticket bound to the intended
             // command — never print the durable install secret (custom URL
             // schemes are not an exclusive channel). Fresh user presence is
-            // required; signing/hook leases must not mint tickets. Provision
-            // under that presence and persist a signing lease before issuing so
-            // the receiver remints/rebinds against proof of this authorization
-            // instead of treating the CLI claim as unattested.
+            // required; signing/hook leases must not mint tickets. Start and
+            // provision the receiver first so its lease-validated remint finishes
+            // before we mint; then rebind under that presence and sign the ticket
+            // against the post-remint secret the receiver will peek.
             do {
                 try RemoteCommandUserAuthorization.requireFreshAuthorization(
                     reason: "Authorize Caff to issue a remote-control URL ticket"
@@ -101,6 +110,7 @@ final class CaffCommandLineController {
             } catch let error as RemoteCommandUserAuthorization.Error {
                 throw CaffCommandLineError.authorizationRequired(error.description)
             }
+            try ensureAppRunning()
             _ = try RemoteCommandAuth().loadOrCreateToken()
             RemoteCommandUserAuthorization.recordProvisioningLeaseIfNeeded()
             let ticket = try RemoteCommandAuth().issueURLTicket(binding: binding)
@@ -114,6 +124,12 @@ final class CaffCommandLineController {
                 reason: "Authorize Caff agent-touch hooks to sign remote commands",
                 leaseSeconds: RemoteCommandUserAuthorization.hookLeaseSeconds
             )
+            do {
+                try ensureAppRunning()
+            } catch {
+                fputs("Caff could not start the app after install-hooks: \(error)\n", stderr)
+            }
+            RemoteCommandBridge.postRetryProvision()
             let manager = hookManager(cooldownSeconds: options.cooldownSeconds)
             do {
                 let changes = try manager.install(targets: options.targets)
@@ -122,7 +138,7 @@ final class CaffCommandLineController {
                 // Partial installs are not atomic across targets. Only revoke the
                 // agent-touch lease when a conclusive scan finds no managed hooks;
                 // an inconclusive scan must preserve the lease for surviving hooks.
-                revokeAgentTouchLeaseIfNoManagedHooksRemain(manager)
+                try? revokeAgentTouchLeaseIfNoManagedHooksRemain(manager)
                 throw error
             }
         case "remove-hooks":
@@ -133,12 +149,13 @@ final class CaffCommandLineController {
                 printHookChanges(changes)
             } catch {
                 // Best-effort remaining-hook check on partial removal failures too.
-                revokeAgentTouchLeaseIfNoManagedHooksRemain(manager)
+                try? revokeAgentTouchLeaseIfNoManagedHooksRemain(manager)
                 throw error
             }
             // When no managed hooks remain, drop the agent-touch lease so peers cannot
-            // keep signing agent-touch without user presence.
-            revokeAgentTouchLeaseIfNoManagedHooksRemain(manager)
+            // keep signing agent-touch without user presence. Propagate revocation
+            // failures — a silent Keychain miss would leave a usable 30-day lease.
+            try revokeAgentTouchLeaseIfNoManagedHooksRemain(manager)
         case "status":
             try rejectUnexpectedOptions(rest)
             try ensureAppRunning()
@@ -161,14 +178,17 @@ final class CaffCommandLineController {
     }
 
     /// Revokes the agent-touch lease only when a conclusive scan finds no managed hooks.
-    /// Inconclusive scans (all targets unreadable) preserve the lease.
-    private func revokeAgentTouchLeaseIfNoManagedHooksRemain(_ manager: AgentHookManager) {
+    /// Inconclusive scans preserve the lease; Keychain revoke failures are propagated.
+    private func revokeAgentTouchLeaseIfNoManagedHooksRemain(_ manager: AgentHookManager) throws {
+        let hasHooks: Bool
         do {
-            if try !manager.hasManagedHooks() {
-                try? RemoteCommandUserAuthorization.revokeLease(scope: .agentTouch)
-            }
+            hasHooks = try manager.hasManagedHooks()
         } catch {
             // Inconclusive — keep the lease so surviving hooks are not disabled.
+            return
+        }
+        if !hasHooks {
+            try RemoteCommandUserAuthorization.revokeLease(scope: .agentTouch)
         }
     }
 

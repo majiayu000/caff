@@ -26,14 +26,24 @@ extension AppDelegate {
         // durable Keychain secret (custom schemes are not exclusive).
         RemoteCommandUserAuthorization.installSlotClaimAttestationHandler()
         RemoteCommandUserAuthorization.noteValidLeasesIfPresent()
+        registerRemoteControlRetryObserverIfNeeded()
         do {
             _ = try RemoteCommandAuth().loadOrCreateToken()
             RemoteCommandUserAuthorization.recordProvisioningLeaseIfNeeded()
         } catch {
             // Do not register DNC/URL handlers after a failed provision: verification
             // can re-enter LocalAuthentication on forged MAC payloads and break the
-            // quiet-rejection guarantee.
+            // quiet-rejection guarantee. A later trusted authorize-remote / install-hooks
+            // posts retryProvision so we can register once a lease exists.
             fputs("Caff failed to provision remote command token: \(error)\n", stderr)
+            return
+        }
+        completeRemoteControlHandlerRegistration()
+    }
+
+    /// Registers command receivers once provisioning succeeded. Idempotent.
+    func completeRemoteControlHandlerRegistration() {
+        guard !remoteControlHandlersRegistered else {
             return
         }
         DistributedNotificationCenter.default().addObserver(
@@ -48,6 +58,44 @@ extension AppDelegate {
             forEventClass: AEEventClass(kInternetEventClass),
             andEventID: AEEventID(kAEGetURL)
         )
+        remoteControlHandlersRegistered = true
+    }
+
+    private func registerRemoteControlRetryObserverIfNeeded() {
+        guard !remoteControlRetryObserverRegistered else {
+            return
+        }
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(handleRemoteControlRetryProvision(_:)),
+            name: RemoteCommandBridge.retryProvisionNotificationName,
+            object: RemoteCommandBridge.bundleIdentifier
+        )
+        remoteControlRetryObserverRegistered = true
+    }
+
+    /// Quiet retry after CLI/app wrote a trusted lease — never prompts LA.
+    @objc func handleRemoteControlRetryProvision(_ notification: Notification) {
+        guard !remoteControlHandlersRegistered else {
+            return
+        }
+        guard RemoteCommandUserAuthorization.hasAnyValidLease() else {
+            return
+        }
+        RemoteCommandUserAuthorization.noteValidLeasesIfPresent()
+        // Disable interactive attestation for this retry so forged DNC posts cannot
+        // spam LocalAuthentication; lease presence is enough to remint quietly.
+        let previous = RemoteCommandAuth.slotClaimAttestationHandler
+        RemoteCommandAuth.slotClaimAttestationHandler = nil
+        defer { RemoteCommandAuth.slotClaimAttestationHandler = previous }
+        do {
+            _ = try RemoteCommandAuth().loadOrCreateToken()
+            RemoteCommandUserAuthorization.recordProvisioningLeaseIfNeeded()
+        } catch {
+            fputs("Caff deferred remote-control provision failed: \(error)\n", stderr)
+            return
+        }
+        completeRemoteControlHandlerRegistration()
     }
 
     @objc func handleRemoteCommandNotification(_ notification: Notification) {
