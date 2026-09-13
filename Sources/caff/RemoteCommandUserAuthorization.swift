@@ -84,8 +84,9 @@ enum RemoteCommandUserAuthorization {
         try authenticateUser(reason: reason)
     }
 
-    /// Registers LocalAuthentication as the gate when Caff rotates a pre-existing
-    /// (possibly peer-planted) slot claim during Keychain bootstrap.
+    /// Registers LocalAuthentication as the gate when Caff adopts a pre-existing
+    /// (possibly peer-planted) slot claim during Keychain bootstrap. Plantable
+    /// Keychain markers are never treated as live provenance on their own.
     static func installSlotClaimAttestationHandler() {
         RemoteCommandAuth.slotClaimAttestationHandler = {
             try requireFreshAuthorization(
