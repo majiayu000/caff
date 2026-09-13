@@ -186,6 +186,31 @@ private func temporaryAuthDirectory() throws -> URL {
     #expect(replayed == .invalidToken)
 }
 
+@Test func remoteCommandAuthRejectsTamperedNonceCache() throws {
+    let directory = try temporaryAuthDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let fixedNow = Date(timeIntervalSince1970: 1_700_000_300)
+    let auth = RemoteCommandAuth(directoryURL: directory, now: { fixedNow })
+    let signed = try auth.sign(["action": "stop"])
+    try auth.verifySignedPayload(signed)
+
+    // Same-UID peer truncates/rewrites the nonce file without a valid MAC.
+    let forged = try JSONSerialization.data(
+        withJSONObject: ["nonces": [:] as [String: Any], "mac": "00"],
+        options: [.sortedKeys]
+    )
+    try forged.write(to: auth.nonceFileURL, options: .atomic)
+
+    let tampered = #expect(throws: RemoteCommandAuthError.self) {
+        try auth.verifySignedPayload(signed)
+    }
+    guard case .storageFailed = tampered else {
+        Issue.record("expected storageFailed for tampered nonce cache, got \(String(describing: tampered))")
+        return
+    }
+}
+
 @Test func remoteCommandAuthRecoversEmptyTokenFile() throws {
     let directory = try temporaryAuthDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }

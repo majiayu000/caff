@@ -277,7 +277,7 @@
 - `enum RemoteCommandAuthError`: `.missingToken` / `.invalidToken` / `.storageFailed(String)`
 - `struct RemoteCommandAuth`
   - `static let tokenFileName` / `nonceFileName` / `tokenByteCount` / `signatureMaxAgeSeconds`
-  - `static let keychainService` / `keychainAccount`
+  - `static let keychainService` / `keychainAccount` / `keychainNonceAccount`
   - `enum PayloadKey`: `token` / `mac` / `nonce` / `timestamp`
   - `init(directoryURL:now:)`
   - `var tokenFileURL: URL` / `nonceFileURL: URL`
@@ -289,9 +289,10 @@
   - `func verifySignedPayload(_:) throws`
 
 **不变量**:
-- 生产路径(默认 `directoryURL`)把安装级共享密钥存入 login Keychain(`service=local.caff.remote-command`),ACL 限定当前可执行文件;迁移后删除 Application Support 明文 token 文件
+- 生产路径(默认 `directoryURL`)把安装级共享密钥与已接受 nonce 映射存入 login Keychain(`service=local.caff.remote-command`, accounts `install-token` / `accepted-nonces`),ACL 限定当前可执行文件;不把同 UID 可写的遗留 Application Support token 迁入 Keychain(删除后重新生成)
 - 显式 `directoryURL`(测试)仍用 Application Support 风格文件:`remote-command.token`,权限 `0o600`,`O_EXCL`+`link` 原子发布
-- 已接受的签名 nonce 持久化到同目录 `remote-command.nonces`,跨进程重启在时间窗内拒绝重放
+- 测试路径的 `remote-command.nonces` 用安装 token HMAC 绑定内容;篡改/截断失败闭合。生产路径 nonce 在 Keychain,同 UID 进程无法通过删文件重置重放状态
+- Keychain 首次写入只 `SecItemAdd`,从不 delete-then-add;遇 `errSecDuplicateItem` 时重新读取胜者
 - DNC 路径通过 `sign`/`authenticate` 只携带短时 HMAC(`mac`/`nonce`/`ts`),**从不广播**可复用 bearer token
 - URL 路径仍可用 `token=` 直传;缺失/错误凭证与 `.storageFailed` 必须区分处理
 - 签名时间窗默认 120 秒;过期或 MAC 不匹配 → `.invalidToken`

@@ -314,6 +314,21 @@ do {
     } catch let error as RemoteCommandAuthError {
         check(error == .invalidToken, "remote auth should report replayed nonce after restart")
     }
+    let forgedNonceCache = try JSONSerialization.data(
+        withJSONObject: ["nonces": [:] as [String: Any], "mac": "deadbeef"],
+        options: [.sortedKeys]
+    )
+    try forgedNonceCache.write(to: auth.nonceFileURL, options: .atomic)
+    do {
+        try auth.verifySignedPayload(signed)
+        failures.append("remote auth should fail closed on tampered nonce cache")
+    } catch let error as RemoteCommandAuthError {
+        if case .storageFailed = error {
+            // expected
+        } else {
+            failures.append("remote auth should report storageFailed for tampered nonce cache")
+        }
+    }
     var tampered = signed
     tampered["action"] = "start"
     do {

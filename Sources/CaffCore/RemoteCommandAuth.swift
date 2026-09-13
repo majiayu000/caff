@@ -22,64 +22,113 @@ public enum RemoteCommandAuthError: Error, CustomStringConvertible, Equatable, S
 
 /// Durable cache of accepted signed-payload nonces until their timestamps expire.
 ///
-/// Survives process restarts by persisting under the auth directory so a captured
-/// payload cannot be replayed after the app relaunches inside the validity window.
+/// Production persists the map in the login Keychain (same ACL as the install
+/// secret) so same-UID peers cannot truncate/delete Application Support state and
+/// replay a captured payload. Test/isolation directories keep a file store whose
+/// contents are HMAC-bound to the install token so rewrite/truncation fails closed.
 private final class AcceptedNonceStore: @unchecked Sendable {
-    private let fileURL: URL
+    private enum Backend {
+        case file(URL)
+        case keychain
+    }
+
+    private let backend: Backend
     private let lock = NSLock()
 
-    init(directoryURL: URL) {
-        self.fileURL = directoryURL.appendingPathComponent(RemoteCommandAuth.nonceFileName, isDirectory: false)
+    init(directoryURL: URL, usesKeychain: Bool) {
+        if usesKeychain {
+            self.backend = .keychain
+        } else {
+            self.backend = .file(
+                directoryURL.appendingPathComponent(RemoteCommandAuth.nonceFileName, isDirectory: false)
+            )
+        }
     }
 
     /// Returns `true` when `nonce` is newly recorded; `false` when it was already consumed.
-    func consume(_ nonce: String, expiresAt: TimeInterval, now: TimeInterval) throws -> Bool {
+    func consume(_ nonce: String, expiresAt: TimeInterval, now: TimeInterval, integrityKey: String) throws -> Bool {
         lock.lock()
         defer { lock.unlock() }
 
-        var expiresAtByNonce = try loadMap()
+        var expiresAtByNonce = try loadMap(integrityKey: integrityKey)
         expiresAtByNonce = expiresAtByNonce.filter { $0.value > now }
         if expiresAtByNonce[nonce] != nil {
-            try saveMap(expiresAtByNonce)
+            try saveMap(expiresAtByNonce, integrityKey: integrityKey)
             return false
         }
         expiresAtByNonce[nonce] = expiresAt
-        try saveMap(expiresAtByNonce)
+        try saveMap(expiresAtByNonce, integrityKey: integrityKey)
         return true
     }
 
-    private func loadMap() throws -> [String: TimeInterval] {
+    private func loadMap(integrityKey: String) throws -> [String: TimeInterval] {
+        switch backend {
+        case let .file(fileURL):
+            return try loadFileMap(fileURL: fileURL, integrityKey: integrityKey)
+        case .keychain:
+            return try loadKeychainMap()
+        }
+    }
+
+    private func saveMap(_ map: [String: TimeInterval], integrityKey: String) throws {
+        switch backend {
+        case let .file(fileURL):
+            try saveFileMap(map, fileURL: fileURL, integrityKey: integrityKey)
+        case .keychain:
+            try saveKeychainMap(map)
+        }
+    }
+
+    private func loadFileMap(fileURL: URL, integrityKey: String) throws -> [String: TimeInterval] {
         do {
             let data = try Data(contentsOf: fileURL)
-            guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                return [:]
+            guard
+                let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let mac = root["mac"] as? String,
+                !mac.isEmpty
+            else {
+                throw RemoteCommandAuthError.storageFailed("nonce cache missing integrity mac")
             }
-            var result: [String: TimeInterval] = [:]
-            for (key, value) in root {
-                if let number = value as? NSNumber {
-                    result[key] = number.doubleValue
-                } else if let double = value as? Double {
-                    result[key] = double
-                }
+            let noncesObject = root["nonces"] as? [String: Any] ?? [:]
+            let map = Self.decodeNonceMap(noncesObject)
+            let expected = RemoteCommandAuth.hmacHex(
+                key: integrityKey,
+                message: Self.canonicalNonceMessage(map)
+            )
+            guard RemoteCommandAuth.constantTimeEquals(mac, expected) else {
+                throw RemoteCommandAuthError.storageFailed("nonce cache integrity check failed")
             }
-            return result
+            return map
         } catch CocoaError.fileReadNoSuchFile {
             return [:]
         } catch let error as NSError where error.domain == NSCocoaErrorDomain
             && error.code == NSFileReadNoSuchFileError {
             return [:]
+        } catch let error as RemoteCommandAuthError {
+            throw error
         } catch {
             throw RemoteCommandAuthError.storageFailed("nonce cache read failed: \(error.localizedDescription)")
         }
     }
 
-    private func saveMap(_ map: [String: TimeInterval]) throws {
+    private func saveFileMap(
+        _ map: [String: TimeInterval],
+        fileURL: URL,
+        integrityKey: String
+    ) throws {
         do {
             try FileManager.default.createDirectory(
                 at: fileURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            let payload = map.mapValues { $0 as Any }
+            let mac = RemoteCommandAuth.hmacHex(
+                key: integrityKey,
+                message: Self.canonicalNonceMessage(map)
+            )
+            let payload: [String: Any] = [
+                "nonces": map.mapValues { $0 as Any },
+                "mac": mac,
+            ]
             let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
             let tempURL = fileURL.deletingLastPathComponent().appendingPathComponent(
                 ".\(RemoteCommandAuth.nonceFileName).\(UUID().uuidString).tmp",
@@ -91,7 +140,6 @@ private final class AcceptedNonceStore: @unchecked Sendable {
                 try? FileManager.default.removeItem(at: tempURL)
                 throw RemoteCommandAuthError.storageFailed("nonce cache chmod failed (\(errno))")
             }
-            // Replace atomically when possible.
             if FileManager.default.fileExists(atPath: fileURL.path) {
                 _ = try FileManager.default.replaceItemAt(fileURL, withItemAt: tempURL)
             } else {
@@ -103,16 +151,119 @@ private final class AcceptedNonceStore: @unchecked Sendable {
             throw RemoteCommandAuthError.storageFailed("nonce cache write failed: \(error.localizedDescription)")
         }
     }
+
+    private func loadKeychainMap() throws -> [String: TimeInterval] {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: RemoteCommandAuth.keychainService,
+            kSecAttrAccount as String: RemoteCommandAuth.keychainNonceAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound {
+            return [:]
+        }
+        guard status == errSecSuccess else {
+            throw RemoteCommandAuthError.storageFailed("nonce keychain read failed (\(status))")
+        }
+        guard let data = item as? Data else {
+            throw RemoteCommandAuthError.storageFailed("nonce keychain item is not data")
+        }
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw RemoteCommandAuthError.storageFailed("nonce keychain JSON is invalid")
+        }
+        return Self.decodeNonceMap(root)
+    }
+
+    private func saveKeychainMap(_ map: [String: TimeInterval]) throws {
+        let payload = map.mapValues { $0 as Any }
+        let data: Data
+        do {
+            data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        } catch {
+            throw RemoteCommandAuthError.storageFailed(
+                "nonce keychain encode failed: \(error.localizedDescription)"
+            )
+        }
+
+        let updateQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: RemoteCommandAuth.keychainService,
+            kSecAttrAccount as String: RemoteCommandAuth.keychainNonceAccount,
+        ]
+        let updateAttrs: [String: Any] = [
+            kSecValueData as String: data,
+        ]
+        let updateStatus = SecItemUpdate(updateQuery as CFDictionary, updateAttrs as CFDictionary)
+        if updateStatus == errSecSuccess {
+            return
+        }
+        if updateStatus != errSecItemNotFound {
+            throw RemoteCommandAuthError.storageFailed("nonce keychain update failed (\(updateStatus))")
+        }
+
+        // First write — add with the same executable-scoped ACL as the install token.
+        // Never delete-then-add: concurrent creators must not wipe each other's item.
+        let access = try RemoteCommandAuth.makeExecutableScopedAccess(
+            descriptor: "Caff remote command nonce cache"
+        )
+        var addQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: RemoteCommandAuth.keychainService,
+            kSecAttrAccount as String: RemoteCommandAuth.keychainNonceAccount,
+            kSecAttrLabel as String: "Caff remote command nonce cache",
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecAttrAccess as String: access,
+            kSecValueData as String: data,
+        ]
+        var status = SecItemAdd(addQuery as CFDictionary, nil)
+        if status == errSecParam {
+            addQuery.removeValue(forKey: kSecAttrAccessible as String)
+            status = SecItemAdd(addQuery as CFDictionary, nil)
+        }
+        if status == errSecDuplicateItem {
+            let retry = SecItemUpdate(updateQuery as CFDictionary, updateAttrs as CFDictionary)
+            guard retry == errSecSuccess else {
+                throw RemoteCommandAuthError.storageFailed(
+                    "nonce keychain duplicate-update failed (\(retry))"
+                )
+            }
+            return
+        }
+        guard status == errSecSuccess else {
+            throw RemoteCommandAuthError.storageFailed("nonce keychain write failed (\(status))")
+        }
+    }
+
+    private static func decodeNonceMap(_ root: [String: Any]) -> [String: TimeInterval] {
+        var result: [String: TimeInterval] = [:]
+        for (key, value) in root {
+            if let number = value as? NSNumber {
+                result[key] = number.doubleValue
+            } else if let double = value as? Double {
+                result[key] = double
+            }
+        }
+        return result
+    }
+
+    private static func canonicalNonceMessage(_ map: [String: TimeInterval]) -> String {
+        map.keys.sorted().map { key in
+            "\(key)=\(map[key] ?? 0)"
+        }.joined(separator: "\n")
+    }
 }
 
 /// Per-install shared secret for authenticating local remote-control commands.
 ///
-/// Production installs store the secret in the login Keychain with an ACL limited
-/// to this executable (code-identity gate), not as a same-UID-readable file under
-/// Application Support. Explicit `directoryURL` (tests) keeps the legacy file store.
-/// CLI/DNC callers never broadcast the reusable secret; they attach a short-lived
-/// HMAC instead. URL callers may still pass `token=` after reading the secret via
-/// `loadOrCreateToken()` / Keychain.
+/// Production installs store the secret and accepted-nonce map in the login Keychain
+/// with an ACL limited to this executable (code-identity gate), not as same-UID-writable
+/// files under Application Support. Explicit `directoryURL` (tests) keeps the legacy
+/// file store with HMAC-bound nonce persistence. CLI/DNC callers never broadcast the
+/// reusable secret; they attach a short-lived HMAC instead. URL callers may still pass
+/// `token=` after reading the secret via `loadOrCreateToken()` / Keychain.
 public struct RemoteCommandAuth: Sendable {
     public static let tokenFileName = "remote-command.token"
     public static let nonceFileName = "remote-command.nonces"
@@ -120,6 +271,7 @@ public struct RemoteCommandAuth: Sendable {
     public static let signatureMaxAgeSeconds: TimeInterval = 120
     public static let keychainService = "local.caff.remote-command"
     public static let keychainAccount = "install-token"
+    public static let keychainNonceAccount = "accepted-nonces"
 
     public enum PayloadKey {
         public static let token = "token"
@@ -144,7 +296,7 @@ public struct RemoteCommandAuth: Sendable {
                 ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             self.directoryURL = supportRoot.appendingPathComponent("Caff", isDirectory: true)
         }
-        self.nonceStore = AcceptedNonceStore(directoryURL: self.directoryURL)
+        self.nonceStore = AcceptedNonceStore(directoryURL: self.directoryURL, usesKeychain: self.usesKeychain)
     }
 
     public var tokenFileURL: URL {
@@ -233,7 +385,7 @@ public struct RemoteCommandAuth: Sendable {
 
         // Record after MAC verification so forged payloads cannot burn valid nonces.
         let expiresAt = timestamp + Self.signatureMaxAgeSeconds
-        guard try nonceStore.consume(nonce, expiresAt: expiresAt, now: current) else {
+        guard try nonceStore.consume(nonce, expiresAt: expiresAt, now: current, integrityKey: secret) else {
             throw RemoteCommandAuthError.invalidToken
         }
     }
@@ -244,19 +396,17 @@ public struct RemoteCommandAuth: Sendable {
         if let existing = try readKeychainToken() {
             return existing
         }
-        // Migrate a legacy Application Support token into the Keychain once, then
-        // delete the same-UID-readable file so peer processes cannot scrape it.
-        if let legacy = try readTokenIfPresent() {
-            try writeKeychainToken(legacy)
-            try removeLegacyTokenFileIfPresent()
-            return legacy
-        }
+        // Never copy a same-UID-writable legacy file into Keychain — a peer could
+        // plant a known value before first launch. Delete any leftover file and
+        // mint a fresh executable-scoped secret instead.
+        try removeLegacyTokenFileIfPresent()
+
         let token = try Self.generateToken()
         do {
             try writeKeychainToken(token)
-            try removeLegacyTokenFileIfPresent()
             return token
         } catch {
+            // Lost a create race — return the winner's stored secret, never ours.
             if let existing = try readKeychainToken() {
                 return existing
             }
@@ -296,30 +446,9 @@ public struct RemoteCommandAuth: Sendable {
             throw RemoteCommandAuthError.storageFailed("token is not valid UTF-8")
         }
 
-        let deleteQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.keychainService,
-            kSecAttrAccount as String: Self.keychainAccount,
-        ]
-        SecItemDelete(deleteQuery as CFDictionary)
-
-        var trustedApp: SecTrustedApplication?
-        let trustedStatus = SecTrustedApplicationCreateFromPath(nil, &trustedApp)
-        guard trustedStatus == errSecSuccess, let trustedApp else {
-            throw RemoteCommandAuthError.storageFailed(
-                "SecTrustedApplicationCreateFromPath failed (\(trustedStatus))"
-            )
-        }
-
-        var access: SecAccess?
-        let accessStatus = SecAccessCreate(
-            "Caff remote command token" as CFString,
-            [trustedApp] as CFArray,
-            &access
-        )
-        guard accessStatus == errSecSuccess, let access else {
-            throw RemoteCommandAuthError.storageFailed("SecAccessCreate failed (\(accessStatus))")
-        }
+        // Add-only: never SecItemDelete then Add. Concurrent first-run creators must
+        // not invalidate each other's returned secret by wiping a just-published item.
+        let access = try Self.makeExecutableScopedAccess(descriptor: "Caff remote command token")
 
         var addQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -339,12 +468,33 @@ public struct RemoteCommandAuth: Sendable {
             status = SecItemAdd(addQuery as CFDictionary, nil)
         }
         if status == errSecDuplicateItem {
-            // Lost a create race — caller will reread.
-            return
+            // Signal the caller to reread the winner instead of returning our token.
+            throw RemoteCommandAuthError.storageFailed("keychain token already exists")
         }
         guard status == errSecSuccess else {
             throw RemoteCommandAuthError.storageFailed("keychain write failed (\(status))")
         }
+    }
+
+    static func makeExecutableScopedAccess(descriptor: String) throws -> SecAccess {
+        var trustedApp: SecTrustedApplication?
+        let trustedStatus = SecTrustedApplicationCreateFromPath(nil, &trustedApp)
+        guard trustedStatus == errSecSuccess, let trustedApp else {
+            throw RemoteCommandAuthError.storageFailed(
+                "SecTrustedApplicationCreateFromPath failed (\(trustedStatus))"
+            )
+        }
+
+        var access: SecAccess?
+        let accessStatus = SecAccessCreate(
+            descriptor as CFString,
+            [trustedApp] as CFArray,
+            &access
+        )
+        guard accessStatus == errSecSuccess, let access else {
+            throw RemoteCommandAuthError.storageFailed("SecAccessCreate failed (\(accessStatus))")
+        }
+        return access
     }
 
     private func removeLegacyTokenFileIfPresent() throws {
@@ -520,7 +670,7 @@ public struct RemoteCommandAuth: Sendable {
         return Data(digest).map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func constantTimeEquals(_ lhs: String, _ rhs: String) -> Bool {
+    fileprivate static func constantTimeEquals(_ lhs: String, _ rhs: String) -> Bool {
         let left = Array(lhs.utf8)
         let right = Array(rhs.utf8)
         guard left.count == right.count else {
