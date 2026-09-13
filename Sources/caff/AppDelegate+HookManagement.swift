@@ -9,7 +9,13 @@ extension AppDelegate {
                 reason: "Authorize Caff agent-touch hooks to sign remote commands",
                 leaseSeconds: RemoteCommandUserAuthorization.hookLeaseSeconds
             )
-            let changes = try hookManager().install()
+            let changes: [AgentHookChange]
+            do {
+                changes = try hookManager().install()
+            } catch {
+                try? RemoteCommandUserAuthorization.revokeLease(scope: .agentTouch)
+                throw error
+            }
             hookManagementStatus = .updated(targets: updatedHookTargets(changes))
             hookManagementStatusLabel.stringValue = hookManagementStatus.localizedText(text)
             showHookResult(title: text.hooksInstalledTitle, changes: changes)
@@ -22,7 +28,11 @@ extension AppDelegate {
 
     @objc func removeAgentHooks() {
         do {
-            let changes = try hookManager().remove()
+            let manager = hookManager()
+            let changes = try manager.remove()
+            if try !manager.hasManagedHooks() {
+                try RemoteCommandUserAuthorization.revokeLease(scope: .agentTouch)
+            }
             hookManagementStatus = .updated(targets: updatedHookTargets(changes))
             hookManagementStatusLabel.stringValue = hookManagementStatus.localizedText(text)
             showHookResult(title: text.hooksRemovedTitle, changes: changes)

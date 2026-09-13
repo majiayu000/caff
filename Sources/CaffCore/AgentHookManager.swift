@@ -85,6 +85,35 @@ public struct AgentHookManager {
         try targets.map { try update(target: $0, operation: .remove) }
     }
 
+    /// Returns true when any managed Caff `agent-touch` hooks remain for `targets`.
+    public func hasManagedHooks(targets: [AgentHookTarget] = AgentHookTarget.allCases) throws -> Bool {
+        for target in targets {
+            let root = try readConfig(at: configURL(for: target))
+            guard let hooksByEvent = root["hooks"] as? [String: Any] else {
+                continue
+            }
+            for eventName in target.eventNames {
+                guard let entries = hooksByEvent[eventName] as? [[String: Any]] else {
+                    continue
+                }
+                for entry in entries {
+                    guard let hooks = entry["hooks"] as? [[String: Any]] else {
+                        continue
+                    }
+                    if hooks.contains(where: { hook in
+                        guard let command = hook["command"] as? String else {
+                            return false
+                        }
+                        return isCaffHookCommand(command, target: target)
+                    }) {
+                        return true
+                    }
+                }
+            }
+        }
+        return false
+    }
+
     public func configURL(for target: AgentHookTarget) -> URL {
         homeDirectory.appendingPathComponent(target.relativeConfigPath)
     }

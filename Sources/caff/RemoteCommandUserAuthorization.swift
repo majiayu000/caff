@@ -10,6 +10,9 @@ import Security
 /// the user already completed LocalAuthentication. Creating or refreshing that lease
 /// always requires user presence; merely launching Caff is not enough.
 ///
+/// Lease payloads are HMAC-bound to the install token so a peer cannot preplant a
+/// far-future timestamp under the public lease account and skip LocalAuthentication.
+///
 /// Leases are scoped: the long-lived install-hooks lease authorizes `agent-touch` only.
 /// `start` / `stop` require a general signing lease (or a fresh prompt).
 enum RemoteCommandUserAuthorization {
@@ -23,6 +26,8 @@ enum RemoteCommandUserAuthorization {
     static let defaultLeaseSeconds: TimeInterval = 12 * 60 * 60
     /// Install-hooks is an explicit user action; grant a longer unattended window for agent-touch.
     static let hookLeaseSeconds: TimeInterval = 30 * 24 * 60 * 60
+
+    private static let leasePayloadPrefix = "v1:"
 
     enum Error: Swift.Error, CustomStringConvertible {
         case denied
@@ -77,6 +82,11 @@ enum RemoteCommandUserAuthorization {
         reason: String
     ) throws {
         try authenticateUser(reason: reason)
+    }
+
+    /// Deletes the Keychain lease for `scope` (best-effort for missing items).
+    static func revokeLease(scope: Scope) throws {
+        try deleteKeychainItem(account: scope.rawValue, context: "lease revoke")
     }
 
     private static func hasValidLease(for scope: Scope, now: Date) throws -> Bool {
@@ -152,17 +162,50 @@ enum RemoteCommandUserAuthorization {
         guard
             let data = item as? Data,
             let raw = String(data: data, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-            let expiresAt = TimeInterval(raw)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
         else {
-            throw Error.storageFailed("lease keychain item is not a timestamp")
+            throw Error.storageFailed("lease keychain item is not UTF-8")
+        }
+
+        // Reject preplanted plain timestamps and any payload we cannot authenticate
+        // against the install token (boundary peers cannot forge without the secret).
+        guard let expiresAt = try verifiedLeaseExpiry(rawPayload: raw, scope: scope) else {
+            try deleteKeychainItem(account: scope.rawValue, context: "preplant lease remove")
+            return nil
+        }
+        return expiresAt
+    }
+
+    private static func verifiedLeaseExpiry(rawPayload: String, scope: Scope) throws -> TimeInterval? {
+        // Expected: v1:<expirySeconds>:<hmacHex>
+        guard rawPayload.hasPrefix(leasePayloadPrefix) else {
+            return nil
+        }
+        let body = String(rawPayload.dropFirst(leasePayloadPrefix.count))
+        guard let split = body.firstIndex(of: ":") else {
+            return nil
+        }
+        let expiryRaw = String(body[..<split])
+        let mac = String(body[body.index(after: split)...])
+        guard let expiresAt = TimeInterval(expiryRaw), !mac.isEmpty else {
+            return nil
+        }
+
+        let token = try RemoteCommandAuth().loadOrCreateToken()
+        let expected = leaseMAC(token: token, scope: scope, expiresAt: Int(expiresAt))
+        guard RemoteCommandAuth.constantTimeEqualsPublic(mac, expected) else {
+            return nil
         }
         return expiresAt
     }
 
     private static func writeLease(scope: Scope, expiresAt: TimeInterval) throws {
-        guard let data = String(Int(expiresAt)).data(using: .utf8) else {
-            throw Error.storageFailed("lease timestamp is not UTF-8")
+        let token = try RemoteCommandAuth().loadOrCreateToken()
+        let expirySeconds = Int(expiresAt)
+        let mac = leaseMAC(token: token, scope: scope, expiresAt: expirySeconds)
+        let payload = "\(leasePayloadPrefix)\(expirySeconds):\(mac)"
+        guard let data = payload.data(using: .utf8) else {
+            throw Error.storageFailed("lease payload is not UTF-8")
         }
 
         let updateQuery: [String: Any] = [
@@ -211,6 +254,13 @@ enum RemoteCommandUserAuthorization {
         guard status == errSecSuccess else {
             throw Error.storageFailed("lease keychain write failed (\(status))")
         }
+    }
+
+    private static func leaseMAC(token: String, scope: Scope, expiresAt: Int) -> String {
+        RemoteCommandAuth.hmacHex(
+            key: token,
+            message: "lease:v1:\(scope.rawValue):\(expiresAt)"
+        )
     }
 
     private static func deleteKeychainItem(account: String, context: String) throws {

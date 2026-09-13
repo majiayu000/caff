@@ -57,6 +57,8 @@ import Testing
     let removedCodexHooks = try #require(removedCodexConfig["hooks"] as? [String: Any])
     #expect(commands(in: removedCodexHooks["Stop"]).contains("echo keep-me"))
     #expect(!commands(in: removedCodexHooks["Stop"]).contains { $0.contains("agent-touch") })
+    #expect(try manager.hasManagedHooks(targets: [.codex]) == false)
+    #expect(try manager.hasManagedHooks(targets: [.claude]) == true)
 
     let claudeURL = home.appendingPathComponent(".claude/settings.json")
     let claudeConfig = try readJSON(claudeURL)
@@ -64,6 +66,9 @@ import Testing
     #expect(claudeHooks["SessionStart"] == nil)
     let claudePromptEntries = try #require(claudeHooks["UserPromptSubmit"] as? [[String: Any]])
     #expect(claudePromptEntries.first?["matcher"] as? String == "*")
+
+    _ = try manager.remove(targets: [.claude])
+    #expect(try manager.hasManagedHooks() == false)
 }
 
 private func readJSON(_ url: URL) throws -> [String: Any] {

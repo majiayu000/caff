@@ -293,15 +293,17 @@ private final class AcceptedNonceStore: @unchecked Sendable {
 /// ACL prevents silent in-process reads by other executables).
 public struct RemoteCommandAuth: Sendable {
     public static let tokenFileName = "remote-command.token"
+    public static let keychainSlotFileName = "remote-command.keychain-slot"
     public static let nonceFileName = "remote-command.nonces"
     public static let nonceLockFileName = "remote-command.nonces.lock"
     public static let tokenByteCount = 32
     public static let signatureMaxAgeSeconds: TimeInterval = 120
     public static let keychainService = "local.caff.remote-command"
+    /// Legacy public account name. Never adopted for reads — only scrubbed on bootstrap.
     public static let keychainAccount = "install-token"
     public static let keychainNonceAccount = "accepted-nonces"
-    /// Prefix baked into secrets Caff mints. A preplanted generic-password under the
-    /// public account name that lacks this prefix is rejected and rotated.
+    /// Prefix baked into secrets Caff mints. Format only — not a trust/provenance signal.
+    /// Provenance comes from an exclusively created private Keychain account slot.
     public static let provisionedTokenPrefix = "caff-v1:"
 
     public enum PayloadKey {
@@ -424,25 +426,36 @@ public struct RemoteCommandAuth: Sendable {
     // MARK: - Keychain-backed production store
 
     private func loadOrCreateKeychainToken() throws -> String {
-        if let existing = try readKeychainToken(), Self.isProvisionedToken(existing) {
-            return existing
-        }
-        // Never adopt a same-UID-preplanted Keychain secret. Public service/account
-        // items without our provisioned prefix are deleted (delete must succeed) and
-        // replaced with a Caff-minted value.
-        if try readKeychainToken() != nil {
-            try deleteKeychainAccount(Self.keychainAccount, context: "preplant token remove")
-            try deleteKeychainAccount(Self.keychainNonceAccount, context: "preplant nonce remove")
-        }
         try removeLegacyTokenFileIfPresent()
+        // Always scrub the legacy public account. Same-UID peers can preplant
+        // `caff-v1:` under that well-known name; we never adopt it.
+        try deleteKeychainAccount(Self.keychainAccount, context: "legacy public token scrub")
+
+        let slot = try loadOrCreateKeychainSlotAccount()
+        if !slot.created {
+            if let existing = try readKeychainToken(account: slot.account),
+               Self.isProvisionedToken(existing) {
+                return existing
+            }
+            // Slot file exists but token missing/corrupt — remint under the same slot.
+            if try readKeychainToken(account: slot.account) != nil {
+                try deleteKeychainAccount(slot.account, context: "corrupt slot token remove")
+                try deleteKeychainAccount(Self.keychainNonceAccount, context: "corrupt slot nonce remove")
+            }
+        } else {
+            // Brand-new private account name: peers could not have addressed it before
+            // this exclusive create. Clear any stale nonce map before minting.
+            try deleteKeychainAccount(Self.keychainNonceAccount, context: "fresh slot nonce scrub")
+        }
 
         let token = Self.provisionedTokenPrefix + (try Self.generateToken())
         do {
-            try writeKeychainToken(token)
+            try writeKeychainToken(token, account: slot.account)
             return token
         } catch {
             // Lost a create race — return the winner's provisioned secret, never ours.
-            if let existing = try readKeychainToken(), Self.isProvisionedToken(existing) {
+            if let existing = try readKeychainToken(account: slot.account),
+               Self.isProvisionedToken(existing) {
                 return existing
             }
             throw error
@@ -454,11 +467,62 @@ public struct RemoteCommandAuth: Sendable {
             && token.count == provisionedTokenPrefix.count + tokenByteCount * 2
     }
 
-    private func readKeychainToken() throws -> String? {
+    /// Private Keychain account slot. Created exclusively so peers cannot target the
+    /// public `install-token` name; the slot id lives under Application Support.
+    private func loadOrCreateKeychainSlotAccount() throws -> (account: String, created: Bool) {
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        let slotURL = directoryURL.appendingPathComponent(Self.keychainSlotFileName, isDirectory: false)
+        let path = slotURL.path
+
+        let account = "install-token-\(try Self.generateToken())"
+        guard let data = account.data(using: .utf8) else {
+            throw RemoteCommandAuthError.storageFailed("slot account is not UTF-8")
+        }
+
+        let fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        if fd >= 0 {
+            defer { close(fd) }
+            let written = data.withUnsafeBytes { buffer -> Int in
+                guard let base = buffer.baseAddress else { return -1 }
+                return write(fd, base, buffer.count)
+            }
+            guard written == data.count else {
+                unlink(path)
+                throw RemoteCommandAuthError.storageFailed("short write while creating keychain slot")
+            }
+            if fsync(fd) != 0 {
+                let code = errno
+                unlink(path)
+                throw RemoteCommandAuthError.storageFailed("keychain slot fsync failed (\(code))")
+            }
+            return (account, true)
+        }
+
+        if errno != EEXIST {
+            throw RemoteCommandAuthError.storageFailed("keychain slot open failed (\(errno))")
+        }
+
+        do {
+            let existing = try String(contentsOf: slotURL, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard existing.hasPrefix("install-token-"), existing.count > "install-token-".count else {
+                throw RemoteCommandAuthError.storageFailed("keychain slot file is corrupt")
+            }
+            return (existing, false)
+        } catch let error as RemoteCommandAuthError {
+            throw error
+        } catch {
+            throw RemoteCommandAuthError.storageFailed(
+                "failed to read keychain slot: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func readKeychainToken(account: String) throws -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.keychainService,
-            kSecAttrAccount as String: Self.keychainAccount,
+            kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
@@ -471,7 +535,7 @@ public struct RemoteCommandAuth: Sendable {
         // scoped ACL may reject the replacement binary. Rotate rather than hang on an
         // interactive Keychain prompt that breaks unattended CLI/hooks.
         if status == errSecAuthFailed || status == errSecInteractionNotAllowed {
-            try deleteKeychainAccount(Self.keychainAccount, context: "token ACL rotate")
+            try deleteKeychainAccount(account, context: "token ACL rotate")
             try deleteKeychainAccount(Self.keychainNonceAccount, context: "nonce ACL rotate")
             return nil
         }
@@ -500,20 +564,19 @@ public struct RemoteCommandAuth: Sendable {
         }
     }
 
-    private func writeKeychainToken(_ token: String) throws {
+    private func writeKeychainToken(_ token: String, account: String) throws {
         guard let data = token.data(using: .utf8) else {
             throw RemoteCommandAuthError.storageFailed("token is not valid UTF-8")
         }
 
         // Add-only: never SecItemDelete then Add. Concurrent first-run creators must
         // not invalidate each other's returned secret by wiping a just-published item.
-        // Preplant cleanup happens before minting when an unprefixed item is present.
         let access = try Self.makeExecutableScopedAccess(descriptor: "Caff remote command token")
 
         var addQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.keychainService,
-            kSecAttrAccount as String: Self.keychainAccount,
+            kSecAttrAccount as String: account,
             kSecAttrLabel as String: "Caff remote command token",
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
             kSecAttrAccess as String: access,
@@ -742,10 +805,15 @@ public struct RemoteCommandAuth: Sendable {
         return encoded
     }
 
-    static func hmacHex(key: String, message: String) -> String {
+    public static func hmacHex(key: String, message: String) -> String {
         let symmetricKey = SymmetricKey(data: Data(key.utf8))
         let digest = HMAC<SHA256>.authenticationCode(for: Data(message.utf8), using: symmetricKey)
         return Data(digest).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Cross-module constant-time compare for lease/token authenticators.
+    public static func constantTimeEqualsPublic(_ lhs: String, _ rhs: String) -> Bool {
+        constantTimeEquals(lhs, rhs)
     }
 
     fileprivate static func constantTimeEquals(_ lhs: String, _ rhs: String) -> Bool {

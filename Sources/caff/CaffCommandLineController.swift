@@ -106,12 +106,24 @@ final class CaffCommandLineController {
                 reason: "Authorize Caff agent-touch hooks to sign remote commands",
                 leaseSeconds: RemoteCommandUserAuthorization.hookLeaseSeconds
             )
-            let changes = try hookManager(cooldownSeconds: options.cooldownSeconds).install(targets: options.targets)
-            printHookChanges(changes)
+            do {
+                let changes = try hookManager(cooldownSeconds: options.cooldownSeconds).install(targets: options.targets)
+                printHookChanges(changes)
+            } catch {
+                // Roll back the long-lived lease if hook installation fails.
+                try? RemoteCommandUserAuthorization.revokeLease(scope: .agentTouch)
+                throw error
+            }
         case "remove-hooks":
             let options = try parseHookOptions(rest, allowCooldown: false)
-            let changes = try hookManager(cooldownSeconds: options.cooldownSeconds).remove(targets: options.targets)
+            let manager = hookManager(cooldownSeconds: options.cooldownSeconds)
+            let changes = try manager.remove(targets: options.targets)
             printHookChanges(changes)
+            // When no managed hooks remain, drop the agent-touch lease so peers cannot
+            // keep signing agent-touch without user presence.
+            if try !manager.hasManagedHooks() {
+                try RemoteCommandUserAuthorization.revokeLease(scope: .agentTouch)
+            }
         case "status":
             try rejectUnexpectedOptions(rest)
             try ensureAppRunning()
