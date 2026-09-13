@@ -71,6 +71,26 @@ import Testing
     #expect(try manager.hasManagedHooks() == false)
 }
 
+@Test func agentHookManagerDetectsHooksWhenSiblingConfigIsUnreadable() throws {
+    let home = FileManager.default.temporaryDirectory
+        .appendingPathComponent("caff-hook-partial-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: home) }
+
+    let manager = AgentHookManager(
+        homeDirectory: home,
+        executablePath: "/Applications/Caff.app/Contents/MacOS/Caff",
+        cooldownSeconds: 60
+    )
+    _ = try manager.install(targets: [.claude])
+
+    let codexURL = home.appendingPathComponent(".codex/hooks.json")
+    try FileManager.default.createDirectory(at: codexURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("not-json".utf8).write(to: codexURL)
+
+    #expect(try manager.hasManagedHooks() == true)
+    #expect(try manager.hasManagedHooks(targets: [.claude]) == true)
+}
+
 private func readJSON(_ url: URL) throws -> [String: Any] {
     let data = try Data(contentsOf: url)
     return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])

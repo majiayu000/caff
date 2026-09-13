@@ -120,23 +120,25 @@ final class CaffCommandLineController {
                 printHookChanges(changes)
             } catch {
                 // Partial installs are not atomic across targets. Only revoke the
-                // agent-touch lease when no managed hooks remain; otherwise already-
-                // written hooks would lose unattended signing while still installed.
-                if (try? manager.hasManagedHooks()) != true {
-                    try? RemoteCommandUserAuthorization.revokeLease(scope: .agentTouch)
-                }
+                // agent-touch lease when a conclusive scan finds no managed hooks;
+                // an inconclusive scan must preserve the lease for surviving hooks.
+                revokeAgentTouchLeaseIfNoManagedHooksRemain(manager)
                 throw error
             }
         case "remove-hooks":
             let options = try parseHookOptions(rest, allowCooldown: false)
             let manager = hookManager(cooldownSeconds: options.cooldownSeconds)
-            let changes = try manager.remove(targets: options.targets)
-            printHookChanges(changes)
+            do {
+                let changes = try manager.remove(targets: options.targets)
+                printHookChanges(changes)
+            } catch {
+                // Best-effort remaining-hook check on partial removal failures too.
+                revokeAgentTouchLeaseIfNoManagedHooksRemain(manager)
+                throw error
+            }
             // When no managed hooks remain, drop the agent-touch lease so peers cannot
             // keep signing agent-touch without user presence.
-            if try !manager.hasManagedHooks() {
-                try RemoteCommandUserAuthorization.revokeLease(scope: .agentTouch)
-            }
+            revokeAgentTouchLeaseIfNoManagedHooksRemain(manager)
         case "status":
             try rejectUnexpectedOptions(rest)
             try ensureAppRunning()
@@ -155,6 +157,18 @@ final class CaffCommandLineController {
             try RemoteCommandUserAuthorization.ensureAuthorized(scope: scope, reason: reason)
         } catch let error as RemoteCommandUserAuthorization.Error {
             throw CaffCommandLineError.authorizationRequired(error.description)
+        }
+    }
+
+    /// Revokes the agent-touch lease only when a conclusive scan finds no managed hooks.
+    /// Inconclusive scans (all targets unreadable) preserve the lease.
+    private func revokeAgentTouchLeaseIfNoManagedHooksRemain(_ manager: AgentHookManager) {
+        do {
+            if try !manager.hasManagedHooks() {
+                try? RemoteCommandUserAuthorization.revokeLease(scope: .agentTouch)
+            }
+        } catch {
+            // Inconclusive — keep the lease so surviving hooks are not disabled.
         }
     }
 

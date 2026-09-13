@@ -14,11 +14,9 @@ extension AppDelegate {
             do {
                 changes = try manager.install()
             } catch {
-                // Partial installs are not atomic across targets. Only revoke when
-                // no managed hooks remain so surviving hooks keep their lease.
-                if (try? manager.hasManagedHooks()) != true {
-                    try? RemoteCommandUserAuthorization.revokeLease(scope: .agentTouch)
-                }
+                // Partial installs are not atomic across targets. Only revoke when a
+                // conclusive scan finds no managed hooks; inconclusive preserves lease.
+                revokeAgentTouchLeaseIfNoManagedHooksRemain(manager)
                 throw error
             }
             hookManagementStatus = .updated(targets: updatedHookTargets(changes))
@@ -34,13 +32,17 @@ extension AppDelegate {
     @objc func removeAgentHooks() {
         do {
             let manager = hookManager()
-            let changes = try manager.remove()
-            if try !manager.hasManagedHooks() {
-                try RemoteCommandUserAuthorization.revokeLease(scope: .agentTouch)
+            do {
+                let changes = try manager.remove()
+                revokeAgentTouchLeaseIfNoManagedHooksRemain(manager)
+                hookManagementStatus = .updated(targets: updatedHookTargets(changes))
+                hookManagementStatusLabel.stringValue = hookManagementStatus.localizedText(text)
+                showHookResult(title: text.hooksRemovedTitle, changes: changes)
+            } catch {
+                // Best-effort remaining-hook check on partial removal failures too.
+                revokeAgentTouchLeaseIfNoManagedHooksRemain(manager)
+                throw error
             }
-            hookManagementStatus = .updated(targets: updatedHookTargets(changes))
-            hookManagementStatusLabel.stringValue = hookManagementStatus.localizedText(text)
-            showHookResult(title: text.hooksRemovedTitle, changes: changes)
         } catch {
             hookManagementStatus = .removeFailed
             hookManagementStatusLabel.stringValue = hookManagementStatus.localizedText(text)
@@ -50,6 +52,17 @@ extension AppDelegate {
 
     private func hookManager() -> AgentHookManager {
         AgentHookManager(executablePath: Bundle.main.executablePath ?? "/Applications/Caff.app/Contents/MacOS/Caff")
+    }
+
+    /// Revokes the agent-touch lease only when a conclusive scan finds no managed hooks.
+    private func revokeAgentTouchLeaseIfNoManagedHooksRemain(_ manager: AgentHookManager) {
+        do {
+            if try !manager.hasManagedHooks() {
+                try? RemoteCommandUserAuthorization.revokeLease(scope: .agentTouch)
+            }
+        } catch {
+            // Inconclusive — keep the lease so surviving hooks are not disabled.
+        }
     }
 
     private func updatedHookTargets(_ changes: [AgentHookChange]) -> [String] {

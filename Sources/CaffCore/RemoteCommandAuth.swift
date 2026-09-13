@@ -408,13 +408,9 @@ public struct RemoteCommandAuth: Sendable {
     public static let provisionedTokenPrefix = "caff-v1:"
     private static let slotClaimAccountPrefix = "slot-claim.v1."
     private static let slotClaimMessagePrefix = "slot-claim-v1|"
-    /// Durable proof that Caff minted `token` under this slot after a remint.
-    /// Cross-process adopt requires a matching seal so lease-validated remint does
-    /// not rotate again on every fresh CLI/app process (breaking MAC auth).
-    /// Peers who plant token+lease cannot forge a seal for a post-remint secret
-    /// they cannot read from the executable-scoped token item.
+    /// Historical HMAC mint-seal accounts — scrubbed on remint/mint; never trusted
+    /// for adopt (seal = HMAC(token) is peer-forgeable before first remint).
     private static let slotMintSealAccountPrefix = "slot-mint-seal.v1."
-    private static let slotMintSealMessagePrefix = "slot-mint-seal-v1|"
     /// Well-known plantable account — scrubbed on bootstrap, never used as provenance.
     /// Historical `slot-trust.v1` markers are rejected; user attestation gates adopt.
     public static let slotTrustMarkerAccount = "slot-trust.v1"
@@ -503,6 +499,14 @@ public struct RemoteCommandAuth: Sendable {
             return nil
         }
         return token
+    }
+
+    /// Reads an already-provisioned secret for MAC/ticket verification without reminting.
+    private func readProvisionedTokenForVerification() throws -> String? {
+        if usesKeychain {
+            return try peekProvisionedKeychainToken()
+        }
+        return try readTokenIfPresent()
     }
 
     /// Records that `token` was authenticated by an HMAC-valid signing lease.
@@ -623,7 +627,9 @@ public struct RemoteCommandAuth: Sendable {
             throw RemoteCommandAuthError.invalidToken
         }
 
-        let secret = try loadOrCreateToken()
+        guard let secret = try readProvisionedTokenForVerification() else {
+            throw RemoteCommandAuthError.missingToken
+        }
         var messageFields = Self.urlTicketBoundFields(from: command)
         messageFields["purpose"] = "url-ticket"
         messageFields[PayloadKey.nonce] = nonce
@@ -682,7 +688,11 @@ public struct RemoteCommandAuth: Sendable {
             throw RemoteCommandAuthError.invalidToken
         }
 
-        let secret = try loadOrCreateToken()
+        // Peek/read only: verification must not remint, or a concurrent CLI signer
+        // that just rotated under a lease would fail MAC checks against a newer secret.
+        guard let secret = try readProvisionedTokenForVerification() else {
+            throw RemoteCommandAuthError.missingToken
+        }
         var unsigned = userInfo
         unsigned.removeValue(forKey: PayloadKey.mac)
         unsigned.removeValue(forKey: PayloadKey.token)
@@ -881,9 +891,10 @@ public struct RemoteCommandAuth: Sendable {
             try writeKeychainToken(token, account: slot.account)
             try writeSlotClaim(claimAccount: claimAccount, token: token)
             try nonceStore.provisionEmpty(integrityKey: token)
-            // Durable mint seal lets fresh CLI/app processes adopt this secret without
-            // reminting again (lease-validated remint is only for unsealed preplants).
-            try writeMintSeal(forSlot: slot.account, token: token)
+            // Do not publish an HMAC mint seal: peers who plant the token can forge
+            // HMAC(token). Cross-process adopt relies on process-local seals; fresh
+            // CLI processes remint under a validated lease and rebind that lease.
+            try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub on fresh mint")
             // Seal this process's attestation cache so subsequent loads adopt the
             // claim we just published without rotating again.
             let sealedKey = claimAccount + "|" + Self.slotClaimValue(forToken: token)
@@ -913,13 +924,14 @@ public struct RemoteCommandAuth: Sendable {
     /// First successful claim under the public slot pointer owns the secret.
     ///
     /// A same-UID peer can preplant `keychain-slot`, a matching token, claim HMAC,
-    /// and even an HMAC-valid signing lease (lease MAC is peer-computable from the
-    /// planted token). Pre-existing claim/lease material is therefore *not* proof of
-    /// Caff provenance. Provenance is: exclusive create of the per-slot claim by a
-    /// live process (then remint), a process-local seal after our mint, or a durable
-    /// mint seal written under the executable ACL together with a Caff-minted token.
-    /// LocalAuthentication / a verified lease prove user presence for remint but
-    /// never authorize adopting a possibly attacker-known secret without a mint seal.
+    /// an HMAC mint seal (seal = HMAC(token)), and even an HMAC-valid signing lease.
+    /// Pre-existing claim/lease/seal material is therefore *not* proof of Caff
+    /// provenance. Provenance is: exclusive create of the per-slot claim by a live
+    /// process (then remint), or a process-local seal after our mint. Cross-process
+    /// continuity uses lease-validated remint + peek-based MAC verify rather than
+    /// trusting a durable mint seal. LocalAuthentication / a verified lease prove
+    /// user presence for remint but never authorize adopting a possibly
+    /// attacker-known secret.
     private func claimSlotOwnership(claimAccount: String, token: String) throws -> SlotClaimResult {
         let expected = Self.slotClaimValue(forToken: token)
         let attestationKey = claimAccount + "|" + expected
@@ -944,18 +956,13 @@ public struct RemoteCommandAuth: Sendable {
             return .adopt
         }
 
-        // Cross-process: a prior Caff mint wrote an HMAC mint seal bound to this token.
-        // Lease-validated remint must not fire again or CLI sign → app verify rotates
-        // the secret and breaks MAC auth / unattended hooks.
-        if let existingClaim = try readSlotClaimValue(claimAccount: claimAccount),
-           Self.constantTimeEquals(existingClaim, expected),
-           try mintSealMatches(claimAccount: claimAccount, token: token) {
-            Self.sealAttestedClaimKey(attestationKey)
-            return .adopt
-        }
+        // Scrub any peer-forgeable HMAC mint seal. Matching seals are not provenance:
+        // peers who plant the token can also plant HMAC(token) under an ACL Caff can read.
+        try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub forgeable cross-process")
 
-        // Lease-validated tokens skip LocalAuthentication but still remint when no
-        // mint seal exists: peers who plant the token can also plant a matching lease.
+        // Lease-validated tokens skip LocalAuthentication but still remint: peers who
+        // plant the token can also plant a matching lease. Callers rebind the lease to
+        // the reminted secret and verify MACs via peek so CLI→app auth stays coherent.
         let presenceProven = Self.hasRecentUserPresence(consume: false)
             || Self.isLeaseValidatedToken(token)
         if presenceProven {
@@ -963,7 +970,6 @@ public struct RemoteCommandAuth: Sendable {
                   Self.constantTimeEquals(existingClaim, expected)
             else {
                 try deleteKeychainAccount(claimAccount, context: "slot claim mismatch remove")
-                try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub on claim mismatch")
                 return .remint
             }
             // Keep presence noted so the caller can record a lease for the reminted secret.
@@ -971,13 +977,11 @@ public struct RemoteCommandAuth: Sendable {
                 Self.noteRecentUserPresence()
             }
             try deleteKeychainAccount(claimAccount, context: "preplant claim rotate after attestation")
-            try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub after attestation remint")
             return .remint
         }
 
         if Self.slotClaimAttestationHandler == nil {
             try deleteKeychainAccount(claimAccount, context: "preplant claim rotate without attestation")
-            try scrubMintSeal(forClaimAccount: claimAccount, context: "mint seal scrub without attestation")
             return .remint
         }
         throw SlotClaimAttestationRequired()
@@ -1107,7 +1111,7 @@ public struct RemoteCommandAuth: Sendable {
             return true
         }
         if status == errSecAuthFailed || status == errSecInteractionNotAllowed {
-            try forceReleaseKeychainLock(account: account)
+            try forceReleaseKeychainLock(account: account, expectedPayload: nil)
             return true
         }
         guard status == errSecSuccess,
@@ -1120,7 +1124,7 @@ public struct RemoteCommandAuth: Sendable {
         // Legacy UUID-only locks (no owner metadata) are treated as reclaimable so
         // a killed holder cannot permanently wedge provisioning.
         guard let parsed = parseKeychainLockPayload(raw) else {
-            try forceReleaseKeychainLock(account: account)
+            try forceReleaseKeychainLock(account: account, expectedPayload: raw)
             return true
         }
 
@@ -1139,7 +1143,7 @@ public struct RemoteCommandAuth: Sendable {
             }
             // PID alive but start identity mismatch → reused PID; reclaim.
         }
-        try forceReleaseKeychainLock(account: account)
+        try forceReleaseKeychainLock(account: account, expectedPayload: raw)
         return true
     }
 
@@ -1187,10 +1191,40 @@ public struct RemoteCommandAuth: Sendable {
            (start.sec != parsed.startSec || start.usec != parsed.startUsec) {
             return
         }
-        try forceReleaseKeychainLock(account: account)
+        try forceReleaseKeychainLock(account: account, expectedPayload: raw)
     }
 
-    private static func forceReleaseKeychainLock(account: String) throws {
+    /// Deletes a lock item, optionally only when it still contains `expectedPayload`.
+    ///
+    /// Stale reclaim must not erase a successor's lock after a concurrent recoverer
+    /// already deleted the inspected payload and acquired a replacement.
+    private static func forceReleaseKeychainLock(account: String, expectedPayload: String? = nil) throws {
+        if let expectedPayload {
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: keychainService,
+                kSecAttrAccount as String: account,
+                kSecReturnData as String: true,
+                kSecMatchLimit as String: kSecMatchLimitOne,
+                kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
+            ]
+            var item: CFTypeRef?
+            let status = SecItemCopyMatching(query as CFDictionary, &item)
+            if status == errSecItemNotFound {
+                return
+            }
+            if status == errSecAuthFailed || status == errSecInteractionNotAllowed {
+                // Unreadable ACL — fall through to unconditional delete below.
+            } else {
+                guard status == errSecSuccess,
+                      let data = item as? Data,
+                      let raw = String(data: data, encoding: .utf8),
+                      raw == expectedPayload
+                else {
+                    return
+                }
+            }
+        }
         let status = SecItemDelete([
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
@@ -1289,77 +1323,9 @@ public struct RemoteCommandAuth: Sendable {
         return slot.isEmpty ? nil : slot
     }
 
-    private static func mintSealValue(forToken token: String) -> String {
-        hmacHex(key: token, message: slotMintSealMessagePrefix + token)
-    }
-
     private func scrubMintSeal(forClaimAccount claimAccount: String, context: String) throws {
         guard let slot = Self.slotAccount(fromClaimAccount: claimAccount) else { return }
         try deleteKeychainAccount(Self.slotMintSealAccount(forSlot: slot), context: context)
-    }
-
-    private func mintSealMatches(claimAccount: String, token: String) throws -> Bool {
-        guard let slot = Self.slotAccount(fromClaimAccount: claimAccount) else { return false }
-        let account = Self.slotMintSealAccount(forSlot: slot)
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.keychainService,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
-        ]
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        if status == errSecItemNotFound {
-            return false
-        }
-        if status == errSecAuthFailed || status == errSecInteractionNotAllowed {
-            try deleteKeychainAccount(account, context: "mint seal ACL rotate")
-            return false
-        }
-        guard status == errSecSuccess,
-              let data = item as? Data,
-              let value = String(data: data, encoding: .utf8)
-        else {
-            return false
-        }
-        return Self.constantTimeEquals(value, Self.mintSealValue(forToken: token))
-    }
-
-    private func writeMintSeal(forSlot slotAccount: String, token: String) throws {
-        let account = Self.slotMintSealAccount(forSlot: slotAccount)
-        // Replace any preplanted seal before publishing ours with executable ACL.
-        try deleteKeychainAccount(account, context: "mint seal replace")
-        guard let data = Self.mintSealValue(forToken: token).data(using: .utf8) else {
-            throw RemoteCommandAuthError.storageFailed("mint seal is not UTF-8")
-        }
-        let access = try Self.makeExecutableScopedAccess(descriptor: "Caff remote command mint seal")
-        var addQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.keychainService,
-            kSecAttrAccount as String: account,
-            kSecAttrLabel as String: "Caff remote command mint seal",
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-            kSecAttrAccess as String: access,
-            kSecValueData as String: data,
-        ]
-        var status = SecItemAdd(addQuery as CFDictionary, nil)
-        if status == errSecParam {
-            addQuery.removeValue(forKey: kSecAttrAccessible as String)
-            status = SecItemAdd(addQuery as CFDictionary, nil)
-        }
-        if status == errSecDuplicateItem {
-            try deleteKeychainAccount(account, context: "mint seal duplicate replace")
-            status = SecItemAdd(addQuery as CFDictionary, nil)
-            if status == errSecParam {
-                addQuery.removeValue(forKey: kSecAttrAccessible as String)
-                status = SecItemAdd(addQuery as CFDictionary, nil)
-            }
-        }
-        guard status == errSecSuccess else {
-            throw RemoteCommandAuthError.storageFailed("mint seal write failed (\(status))")
-        }
     }
 
     private func ensureNonceStore(forToken token: String, nonceAccount: String) throws {

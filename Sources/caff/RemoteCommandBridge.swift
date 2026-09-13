@@ -26,6 +26,9 @@ enum RemoteCommandBridge {
         auth: RemoteCommandAuth = RemoteCommandAuth()
     ) throws {
         let payload = try auth.sign(userInfo)
+        // sign() may remint under a validated lease; rebind that lease to the new secret
+        // so the next fresh CLI process can authenticate without re-prompting.
+        RemoteCommandUserAuthorization.recordProvisioningLeaseIfNeeded()
         DistributedNotificationCenter.default().postNotificationName(
             notificationName,
             object: bundleIdentifier,

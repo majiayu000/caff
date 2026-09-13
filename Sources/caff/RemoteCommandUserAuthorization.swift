@@ -64,6 +64,9 @@ enum RemoteCommandUserAuthorization {
         now: Date = Date()
     ) throws {
         if try hasValidLease(for: scope, now: now) {
+            // Remember which scope authorized this process so a remint during sign()
+            // can rebind the same lease (agent-touch must not promote to signing).
+            noteValidatedProvisioningScope(scope)
             return
         }
         try authenticateUser(reason: reason)
