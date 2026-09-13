@@ -39,6 +39,7 @@ final class CaffCommandLineController {
     private let statusStore = CaffStatusStore()
 
     func run(arguments: [String]) throws {
+        RemoteCommandUserAuthorization.installSlotClaimAttestationHandler()
         guard let command = arguments.first else {
             throw CaffCommandLineError.missingCommand
         }

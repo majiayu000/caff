@@ -378,6 +378,15 @@ public struct RemoteCommandAuth: Sendable {
     public static let provisionedTokenPrefix = "caff-v1:"
     private static let slotClaimAccountPrefix = "slot-claim.v1."
     private static let slotClaimMessagePrefix = "slot-claim-v1|"
+    /// Well-known marker created by the first live Caff process that encounters an
+    /// already-present per-slot claim. Peers can precompute `slotClaimValue(forToken:)`
+    /// and plant the claim item; they cannot prove the first *live* Caff execution.
+    /// Winning exclusive create of this marker forces remint (after optional attestation).
+    public static let slotTrustMarkerAccount = "slot-trust.v1"
+
+    /// Optional user-presence gate invoked when rotating a pre-existing slot claim.
+    /// App/CLI set this to LocalAuthentication; tests leave it nil.
+    public static var slotClaimAttestationHandler: (() throws -> Void)?
 
     public enum PayloadKey {
         public static let token = "token"
@@ -614,7 +623,12 @@ public struct RemoteCommandAuth: Sendable {
                         expected: existing,
                         context: "preplant slot token rotate"
                     )
-                    try deleteKeychainAccount(nonceAccount, context: "preplant slot nonce rotate")
+                    try deleteKeychainNonceIfTokenGoneOrMatches(
+                        nonceAccount: nonceAccount,
+                        tokenAccount: slot.account,
+                        expectedToken: existing,
+                        context: "preplant slot nonce rotate"
+                    )
                 }
             } else if let corrupt = observed {
                 try deleteKeychainTokenIfMatches(
@@ -648,12 +662,40 @@ public struct RemoteCommandAuth: Sendable {
                         expected: winner,
                         context: "winner preplant token rotate"
                     )
-                    try deleteKeychainAccount(nonceAccount, context: "winner preplant nonce rotate")
+                    try deleteKeychainNonceIfTokenGoneOrMatches(
+                        nonceAccount: nonceAccount,
+                        tokenAccount: slot.account,
+                        expectedToken: winner,
+                        context: "winner preplant nonce rotate"
+                    )
                 }
             }
 
-            // No valid claimed token remains — clear nonce before minting a fresh pair.
-            try deleteKeychainAccount(nonceAccount, context: "corrupt slot nonce remove")
+            // No valid claimed token remains — clear nonce only when the slot token is
+            // still absent/unprovisioned. A concurrent winner may have published token +
+            // nonce + claim after our stale reads; unconditional delete would wipe them.
+            if let leftover = try readKeychainToken(account: slot.account),
+               Self.isProvisionedToken(leftover) {
+                switch try claimSlotOwnership(claimAccount: claimAccount, token: leftover) {
+                case .adopt:
+                    try ensureNonceStore(forToken: leftover, nonceAccount: nonceAccount)
+                    return leftover
+                case .remint:
+                    try deleteKeychainTokenIfMatches(
+                        account: slot.account,
+                        expected: leftover,
+                        context: "late winner preplant token rotate"
+                    )
+                    try deleteKeychainNonceIfTokenGoneOrMatches(
+                        nonceAccount: nonceAccount,
+                        tokenAccount: slot.account,
+                        expectedToken: leftover,
+                        context: "late winner preplant nonce rotate"
+                    )
+                }
+            } else {
+                try deleteKeychainAccount(nonceAccount, context: "corrupt slot nonce remove")
+            }
         } else {
             // Brand-new private account name: peers could not have addressed it before
             // this exclusive create. Clear any stale nonce/claim before minting.
@@ -665,6 +707,9 @@ public struct RemoteCommandAuth: Sendable {
         do {
             try writeKeychainToken(token, account: slot.account)
             try writeSlotClaim(claimAccount: claimAccount, token: token)
+            // Mark this install as live-provisioned so a later matching claim is
+            // adopted without treating our own seal as a preplant.
+            _ = try establishSlotTrustMarker()
             try nonceStore.provisionEmpty(integrityKey: token)
             return token
         } catch {
@@ -690,33 +735,82 @@ public struct RemoteCommandAuth: Sendable {
 
     /// First successful claim under the public slot pointer owns the secret.
     ///
-    /// A same-UID peer can preplant `keychain-slot` plus a matching token before
-    /// Caff runs. The claim item is the non-preplantable boundary for that pointer:
-    /// the first Caff process to exclusively create it rotates away any preplanted
-    /// secret; later processes adopt only when the claim MAC matches the token.
+    /// A same-UID peer can preplant `keychain-slot`, a matching token, and even
+    /// `slotClaimValue(forToken:)` (HMAC is peer-computable from the token). A
+    /// pre-existing matching claim is therefore *not* proof of Caff provenance.
+    /// Provenance is: exclusive create of the per-slot claim by a live process,
+    /// or — when the claim was already present — exclusive create of the install
+    /// trust marker (optionally after user attestation) which forces remint.
     private func claimSlotOwnership(claimAccount: String, token: String) throws -> SlotClaimResult {
         let expected = Self.slotClaimValue(forToken: token)
-        if let existingClaim = try readSlotClaimValue(claimAccount: claimAccount) {
-            if Self.constantTimeEquals(existingClaim, expected) {
+
+        // Prefer exclusive create without trusting a pre-read match (peers can plant HMAC).
+        if try readSlotClaimValue(claimAccount: claimAccount) == nil {
+            do {
+                try writeSlotClaim(claimAccount: claimAccount, token: token, allowUpdate: false)
+                // We created the claim against a possibly preplanted token — remint.
+                return .remint
+            } catch {
+                // Lost the claim create race to another live process; adopt only if
+                // the winner matches this token.
+                guard let winnerClaim = try readSlotClaimValue(claimAccount: claimAccount),
+                      Self.constantTimeEquals(winnerClaim, expected)
+                else {
+                    return .remint
+                }
                 return .adopt
             }
-            try deleteKeychainAccount(claimAccount, context: "slot claim mismatch remove")
-            return .remint
         }
 
-        do {
-            try writeSlotClaim(claimAccount: claimAccount, token: token, allowUpdate: false)
-            // We created the claim against a possibly preplanted token — remint.
+        // Claim already existed before this live attempt — treat as untrusted until
+        // this install wins the trust-marker race (first Caff execution).
+        switch try establishSlotTrustMarker() {
+        case .created:
+            try Self.slotClaimAttestationHandler?()
+            try deleteKeychainAccount(claimAccount, context: "preplant claim rotate after trust marker")
             return .remint
-        } catch {
-            // Lost the claim create race; adopt only if the winner matches this token.
-            guard let winnerClaim = try readSlotClaimValue(claimAccount: claimAccount),
-                  Self.constantTimeEquals(winnerClaim, expected)
+        case .alreadyPresent:
+            guard let existingClaim = try readSlotClaimValue(claimAccount: claimAccount),
+                  Self.constantTimeEquals(existingClaim, expected)
             else {
+                try deleteKeychainAccount(claimAccount, context: "slot claim mismatch remove")
                 return .remint
             }
             return .adopt
         }
+    }
+
+    private enum SlotTrustMarkerResult {
+        case created
+        case alreadyPresent
+    }
+
+    private func establishSlotTrustMarker() throws -> SlotTrustMarkerResult {
+        let access = try Self.makeExecutableScopedAccess(descriptor: "Caff remote command slot trust")
+        guard let data = (try Self.generateToken()).data(using: .utf8) else {
+            throw RemoteCommandAuthError.storageFailed("slot trust marker is not UTF-8")
+        }
+        var addQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.keychainService,
+            kSecAttrAccount as String: Self.slotTrustMarkerAccount,
+            kSecAttrLabel as String: "Caff remote command slot trust",
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecAttrAccess as String: access,
+            kSecValueData as String: data,
+        ]
+        var status = SecItemAdd(addQuery as CFDictionary, nil)
+        if status == errSecParam {
+            addQuery.removeValue(forKey: kSecAttrAccessible as String)
+            status = SecItemAdd(addQuery as CFDictionary, nil)
+        }
+        if status == errSecSuccess {
+            return .created
+        }
+        if status == errSecDuplicateItem {
+            return .alreadyPresent
+        }
+        throw RemoteCommandAuthError.storageFailed("slot trust marker write failed (\(status))")
     }
 
     private func readSlotClaimValue(claimAccount: String) throws -> String? {
@@ -997,6 +1091,22 @@ public struct RemoteCommandAuth: Sendable {
             return
         }
         try deleteKeychainAccount(account, context: context)
+    }
+
+    /// Removes a nonce map only when the associated token is gone or still the
+    /// observed value we are rotating. Avoids wiping a concurrent winner's map.
+    private func deleteKeychainNonceIfTokenGoneOrMatches(
+        nonceAccount: String,
+        tokenAccount: String,
+        expectedToken: String,
+        context: String
+    ) throws {
+        if let current = try readKeychainToken(account: tokenAccount) {
+            guard current == expectedToken else {
+                return
+            }
+        }
+        try deleteKeychainAccount(nonceAccount, context: context)
     }
 
     private func writeKeychainToken(_ token: String, account: String) throws {

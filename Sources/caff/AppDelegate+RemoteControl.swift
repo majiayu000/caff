@@ -24,6 +24,7 @@ extension AppDelegate {
         // Provision the install token at launch. External caff:// callers obtain a
         // short-lived URL ticket via `caff remote-token` (user-authorized), not the
         // durable Keychain secret (custom schemes are not exclusive).
+        RemoteCommandUserAuthorization.installSlotClaimAttestationHandler()
         do {
             _ = try RemoteCommandAuth().loadOrCreateToken()
         } catch {

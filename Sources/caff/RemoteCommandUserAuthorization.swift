@@ -84,6 +84,16 @@ enum RemoteCommandUserAuthorization {
         try authenticateUser(reason: reason)
     }
 
+    /// Registers LocalAuthentication as the gate when Caff rotates a pre-existing
+    /// (possibly peer-planted) slot claim during Keychain bootstrap.
+    static func installSlotClaimAttestationHandler() {
+        RemoteCommandAuth.slotClaimAttestationHandler = {
+            try requireFreshAuthorization(
+                reason: "Authorize Caff to establish remote-control credentials"
+            )
+        }
+    }
+
     /// Deletes the Keychain lease for `scope` (best-effort for missing items).
     static func revokeLease(scope: Scope) throws {
         try deleteKeychainItem(account: scope.rawValue, context: "lease revoke")
@@ -142,6 +152,8 @@ enum RemoteCommandUserAuthorization {
             kSecAttrAccount as String: scope.rawValue,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
+            // Unattended ACL recovery must not block on Keychain authorization UI.
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
         ]
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
