@@ -364,14 +364,31 @@ do {
     defer { try? FileManager.default.removeItem(at: ticketDirectory) }
     let ticketAuth = RemoteCommandAuth(directoryURL: ticketDirectory)
     let installToken = try ticketAuth.loadOrCreateToken()
-    let ticket = try ticketAuth.issueURLTicket()
+    let ticketCommand: [String: String] = [
+        "action": "start",
+        "minutes": "30",
+        "reason": "agent",
+        "source": "url",
+    ]
+    let ticket = try ticketAuth.issueURLTicket(binding: ticketCommand)
     check(!ticket.contains(installToken), "URL ticket must not embed the install token")
-    try ticketAuth.authenticate([RemoteCommandAuth.PayloadKey.ticket: ticket])
+    var ticketPayload = ticketCommand
+    ticketPayload[RemoteCommandAuth.PayloadKey.ticket] = ticket
+    try ticketAuth.authenticate(ticketPayload)
     do {
-        try ticketAuth.authenticate([RemoteCommandAuth.PayloadKey.ticket: ticket])
+        try ticketAuth.authenticate(ticketPayload)
         failures.append("remote auth should reject replayed URL ticket")
     } catch let error as RemoteCommandAuthError {
         check(error == .invalidToken, "remote auth should report replayed URL ticket")
+    }
+    do {
+        try ticketAuth.authenticate([
+            "action": "stop",
+            RemoteCommandAuth.PayloadKey.ticket: ticket,
+        ])
+        failures.append("remote auth should reject URL ticket rebound to another action")
+    } catch let error as RemoteCommandAuthError {
+        check(error == .invalidToken, "remote auth should report rebound URL ticket")
     }
 
     let emptyTokenDirectory = FileManager.default.temporaryDirectory

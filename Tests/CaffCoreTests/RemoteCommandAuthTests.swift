@@ -269,11 +269,19 @@ private func temporaryAuthDirectory() throws -> URL {
 
     let fixedNow = Date(timeIntervalSince1970: 1_700_000_400)
     let auth = RemoteCommandAuth(directoryURL: directory, now: { fixedNow })
-    let ticket = try auth.issueURLTicket()
+    let command: [String: String] = [
+        "action": "start",
+        "minutes": "30",
+        "reason": "agent",
+        "source": "url",
+    ]
+    let ticket = try auth.issueURLTicket(binding: command)
+    var userInfo = command
+    userInfo[RemoteCommandAuth.PayloadKey.ticket] = ticket
 
-    try auth.authenticate([RemoteCommandAuth.PayloadKey.ticket: ticket])
+    try auth.authenticate(userInfo)
     let replayed = #expect(throws: RemoteCommandAuthError.self) {
-        try auth.authenticate([RemoteCommandAuth.PayloadKey.ticket: ticket])
+        try auth.authenticate(userInfo)
     }
     #expect(replayed == .invalidToken)
 }
@@ -284,7 +292,36 @@ private func temporaryAuthDirectory() throws -> URL {
 
     let auth = RemoteCommandAuth(directoryURL: directory)
     let token = try auth.loadOrCreateToken()
-    let ticket = try auth.issueURLTicket()
+    let ticket = try auth.issueURLTicket(binding: ["action": "stop"])
     #expect(!ticket.contains(token))
     #expect(ticket.hasPrefix("v1:"))
+}
+
+@Test func remoteCommandAuthURLTicketRejectsReboundCommand() throws {
+    let directory = try temporaryAuthDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let auth = RemoteCommandAuth(directoryURL: directory)
+    let ticket = try auth.issueURLTicket(binding: [
+        "action": "start",
+        "minutes": "30",
+        "source": "url",
+    ])
+    let rebound = #expect(throws: RemoteCommandAuthError.self) {
+        try auth.authenticate([
+            "action": "stop",
+            RemoteCommandAuth.PayloadKey.ticket: ticket,
+        ])
+    }
+    #expect(rebound == .invalidToken)
+
+    let alteredOptions = #expect(throws: RemoteCommandAuthError.self) {
+        try auth.authenticate([
+            "action": "start",
+            "minutes": "0",
+            "source": "url",
+            RemoteCommandAuth.PayloadKey.ticket: ticket,
+        ])
+    }
+    #expect(alteredOptions == .invalidToken)
 }

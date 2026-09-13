@@ -84,10 +84,11 @@ final class CaffCommandLineController {
             )
             print("remote-control signing authorized")
         case "remote-token":
-            try rejectUnexpectedOptions(rest)
-            // Issue a short-lived single-use URL ticket — never print the durable
-            // install secret (custom URL schemes are not an exclusive channel).
-            // Fresh user presence is required; signing/hook leases must not mint tickets.
+            let binding = try parseRemoteTokenBinding(rest)
+            // Issue a short-lived single-use URL ticket bound to the intended
+            // command — never print the durable install secret (custom URL
+            // schemes are not an exclusive channel). Fresh user presence is
+            // required; signing/hook leases must not mint tickets.
             do {
                 try RemoteCommandUserAuthorization.requireFreshAuthorization(
                     reason: "Authorize Caff to issue a remote-control URL ticket"
@@ -95,7 +96,7 @@ final class CaffCommandLineController {
             } catch let error as RemoteCommandUserAuthorization.Error {
                 throw CaffCommandLineError.authorizationRequired(error.description)
             }
-            let ticket = try RemoteCommandAuth().issueURLTicket()
+            let ticket = try RemoteCommandAuth().issueURLTicket(binding: binding)
             print(ticket)
         case "install-hooks":
             let options = try parseHookOptions(rest, allowCooldown: true)
@@ -172,6 +173,30 @@ final class CaffCommandLineController {
         _ = try RemoteControlParser.duration(minutes: result[RemoteCommandBridge.Key.minutes])
         _ = try RemoteControlParser.source(result[RemoteCommandBridge.Key.source])
         return result
+    }
+
+    /// Parses `remote-token <action> [options]` into the command fields bound into the ticket MAC.
+    private func parseRemoteTokenBinding(_ arguments: [String]) throws -> [String: String] {
+        guard let action = arguments.first else {
+            throw CaffCommandLineError.missingValue("remote-token action (start|stop|agent-touch)")
+        }
+        let rest = Array(arguments.dropFirst())
+        switch action {
+        case "start":
+            var options = try parseStartOptions(rest)
+            // URL opens default source to `url` before auth; bind the same default.
+            if options[RemoteCommandBridge.Key.source] == nil {
+                options[RemoteCommandBridge.Key.source] = SessionSource.url.rawValue
+            }
+            return options
+        case "stop":
+            try rejectUnexpectedOptions(rest)
+            return [RemoteCommandBridge.Key.action: "stop"]
+        case "agent-touch":
+            return try parseAgentTouchOptions(rest)
+        default:
+            throw CaffCommandLineError.unknownCommand("remote-token \(action)")
+        }
     }
 
     private func parseAgentTouchOptions(_ arguments: [String]) throws -> [String: String] {

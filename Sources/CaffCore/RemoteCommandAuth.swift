@@ -88,29 +88,17 @@ private final class AcceptedNonceStore: @unchecked Sendable {
         }
     }
 
-    /// Ensures a valid HMAC-bound nonce map exists without wiping a healthy cache.
+    /// Confirms a valid HMAC-bound nonce map already exists for `integrityKey`.
+    ///
+    /// Never remints an empty map here: wiping replay state under an established
+    /// token would allow a deleted/corrupt nonce item to resurrect captured
+    /// payloads inside the signature window. Empty maps are created only via
+    /// `provisionEmpty` alongside a newly minted token.
     func ensureProvisioned(integrityKey: String) throws {
         Self.processLock.lock()
         defer { Self.processLock.unlock() }
         try withCrossProcessLock {
-            do {
-                _ = try loadMap(integrityKey: integrityKey)
-            } catch {
-                if case .keychain = backend {
-                    let account = try resolveKeychainAccount()
-                    let status = SecItemDelete([
-                        kSecClass as String: kSecClassGenericPassword,
-                        kSecAttrService as String: RemoteCommandAuth.keychainService,
-                        kSecAttrAccount as String: account,
-                    ] as CFDictionary)
-                    guard status == errSecSuccess || status == errSecItemNotFound else {
-                        throw RemoteCommandAuthError.storageFailed(
-                            "nonce keychain remint delete failed (\(status))"
-                        )
-                    }
-                }
-                try saveMap([:], integrityKey: integrityKey)
-            }
+            _ = try loadMap(integrityKey: integrityKey)
         }
     }
 
@@ -463,7 +451,7 @@ public struct RemoteCommandAuth: Sendable {
             return
         }
         if let ticket = userInfo[PayloadKey.ticket], !ticket.isEmpty {
-            try verifyURLTicket(ticket)
+            try verifyURLTicket(ticket, boundTo: userInfo)
             return
         }
         if usesKeychain {
@@ -472,27 +460,26 @@ public struct RemoteCommandAuth: Sendable {
         try verify(userInfo[PayloadKey.token])
     }
 
-    /// Issues a short-lived, single-use URL ticket derived from the install secret.
+    /// Issues a short-lived, single-use URL ticket bound to a specific command.
     ///
     /// The durable Keychain secret never appears in the ticket string — only a
-    /// MAC over `(purpose, ts, nonce)` that is consumed like a signed DNC payload.
-    public func issueURLTicket() throws -> String {
+    /// MAC over `(purpose, ts, nonce, command fields)` that is consumed like a
+    /// signed DNC payload. Binding the command prevents a hijacked `caff://`
+    /// handler from replaying the ticket with a different action or options.
+    public func issueURLTicket(binding command: [String: String]) throws -> String {
         let secret = try loadOrCreateToken()
         let nonce = UUID().uuidString
         let timestamp = String(Int(now().timeIntervalSince1970))
-        let mac = Self.hmacHex(
-            key: secret,
-            message: Self.canonicalMessage([
-                "purpose": "url-ticket",
-                PayloadKey.nonce: nonce,
-                PayloadKey.timestamp: timestamp,
-            ])
-        )
+        var messageFields = Self.urlTicketBoundFields(from: command)
+        messageFields["purpose"] = "url-ticket"
+        messageFields[PayloadKey.nonce] = nonce
+        messageFields[PayloadKey.timestamp] = timestamp
+        let mac = Self.hmacHex(key: secret, message: Self.canonicalMessage(messageFields))
         return "v1:\(timestamp):\(nonce):\(mac)"
     }
 
-    /// Verifies and consumes a URL ticket issued by `issueURLTicket()`.
-    public func verifyURLTicket(_ ticket: String) throws {
+    /// Verifies and consumes a URL ticket issued by `issueURLTicket(binding:)`.
+    public func verifyURLTicket(_ ticket: String, boundTo command: [String: String]) throws {
         let parts = ticket.split(separator: ":", maxSplits: 3, omittingEmptySubsequences: false)
         guard parts.count == 4, parts[0] == "v1" else {
             throw RemoteCommandAuthError.invalidToken
@@ -509,14 +496,11 @@ public struct RemoteCommandAuth: Sendable {
         }
 
         let secret = try loadOrCreateToken()
-        let expected = Self.hmacHex(
-            key: secret,
-            message: Self.canonicalMessage([
-                "purpose": "url-ticket",
-                PayloadKey.nonce: nonce,
-                PayloadKey.timestamp: tsRaw,
-            ])
-        )
+        var messageFields = Self.urlTicketBoundFields(from: command)
+        messageFields["purpose"] = "url-ticket"
+        messageFields[PayloadKey.nonce] = nonce
+        messageFields[PayloadKey.timestamp] = tsRaw
+        let expected = Self.hmacHex(key: secret, message: Self.canonicalMessage(messageFields))
         guard Self.constantTimeEquals(mac, expected) else {
             throw RemoteCommandAuthError.invalidToken
         }
@@ -525,6 +509,17 @@ public struct RemoteCommandAuth: Sendable {
         guard try nonceStore.consume(nonce, expiresAt: expiresAt, now: current, integrityKey: secret) else {
             throw RemoteCommandAuthError.invalidToken
         }
+    }
+
+    /// Command fields covered by a URL ticket MAC (excludes auth envelope keys).
+    public static func urlTicketBoundFields(from command: [String: String]) -> [String: String] {
+        var fields = command
+        fields.removeValue(forKey: PayloadKey.ticket)
+        fields.removeValue(forKey: PayloadKey.token)
+        fields.removeValue(forKey: PayloadKey.mac)
+        fields.removeValue(forKey: PayloadKey.nonce)
+        fields.removeValue(forKey: PayloadKey.timestamp)
+        return fields
     }
 
     /// Signs `userInfo` with a short-lived HMAC, never embedding the reusable token.
@@ -589,16 +584,49 @@ public struct RemoteCommandAuth: Sendable {
         let slot = try loadOrCreateKeychainSlotAccount()
         let nonceAccount = Self.nonceAccount(forSlot: slot.account)
         if !slot.created {
-            if let existing = try readKeychainToken(account: slot.account),
-               Self.isProvisionedToken(existing) {
-                // Ensure nonce store exists for this slot (upgrade path).
-                try ensureNonceStore(forToken: existing, nonceAccount: nonceAccount)
-                return existing
+            let observed = try readKeychainToken(account: slot.account)
+            if let existing = observed, Self.isProvisionedToken(existing) {
+                do {
+                    // Ensure nonce store exists for this slot (upgrade path).
+                    try ensureNonceStore(forToken: existing, nonceAccount: nonceAccount)
+                    return existing
+                } catch {
+                    // Established token with unusable nonce state: remint token+nonce
+                    // together. Never wipe the nonce map under the same integrity key
+                    // (that would revive captured payloads). Delete only this exact
+                    // token value so a concurrently published winner survives.
+                    try deleteKeychainTokenIfMatches(
+                        account: slot.account,
+                        expected: existing,
+                        context: "established token nonce-store remint"
+                    )
+                }
+            } else if let corrupt = observed {
+                // Slot exists but token corrupt — remove only the exact corrupt value
+                // originally observed so a concurrently recovered winner is kept.
+                try deleteKeychainTokenIfMatches(
+                    account: slot.account,
+                    expected: corrupt,
+                    context: "corrupt slot token remove"
+                )
             }
-            // Slot exists but token missing/corrupt — remint under the same slot.
-            if try readKeychainToken(account: slot.account) != nil {
-                try deleteKeychainAccount(slot.account, context: "corrupt slot token remove")
+
+            // After a miss/corrupt/remint path, adopt a concurrent winner if present.
+            if let winner = try readKeychainToken(account: slot.account),
+               Self.isProvisionedToken(winner) {
+                do {
+                    try ensureNonceStore(forToken: winner, nonceAccount: nonceAccount)
+                    return winner
+                } catch {
+                    try deleteKeychainTokenIfMatches(
+                        account: slot.account,
+                        expected: winner,
+                        context: "winner token nonce-store remint"
+                    )
+                }
             }
+
+            // No valid token remains — clear nonce before minting a fresh pair.
             try deleteKeychainAccount(nonceAccount, context: "corrupt slot nonce remove")
         } else {
             // Brand-new private account name: peers could not have addressed it before
@@ -800,6 +828,24 @@ public struct RemoteCommandAuth: Sendable {
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw RemoteCommandAuthError.storageFailed("\(context) failed (\(status))")
         }
+    }
+
+    /// Deletes a Keychain token only when it still equals the value we observed.
+    ///
+    /// Prevents a recovery path from wiping a concurrently published provisioned
+    /// token that appeared after our initial miss/corrupt read.
+    private func deleteKeychainTokenIfMatches(
+        account: String,
+        expected: String,
+        context: String
+    ) throws {
+        guard let current = try readKeychainToken(account: account) else {
+            return
+        }
+        guard current == expected else {
+            return
+        }
+        try deleteKeychainAccount(account, context: context)
     }
 
     private func writeKeychainToken(_ token: String, account: String) throws {

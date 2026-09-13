@@ -159,9 +159,9 @@ The same executable accepts `start`, `stop`, `status`, `agent-touch`, `install-h
 
 Remote control over DistributedNotificationCenter and `caff://` URLs requires a per-install shared secret stored in the login Keychain (`service=local.caff.remote-command`, ACL limited to the Caff executable) rather than a same-UID-readable Application Support file. The secret is created at app launch and by authorized CLI paths via `RemoteCommandAuth.loadOrCreateToken()` (legacy Application Support token files are deleted and replaced with a freshly generated Keychain secret, never trusted as provenance). The private Keychain account slot selector is itself stored in Keychain (not an Application Support file). CLI/`agent-touch` posts over DNC use a short-lived HMAC (`mac`/`nonce`/`ts`) derived from that secret and never broadcast the reusable token; accepted nonces are persisted in a private Keychain-backed HMAC-bound cache until expiry so peers cannot reset replay state by deleting an Application Support file or preplanting the public `accepted-nonces` account, and restarts cannot replay a captured payload inside the 120s window.
 
-Signing those CLI DNC payloads also requires user authorization (`LocalAuthentication`) so a same-UID peer cannot silently use the trusted executable as a signing oracle. Run `caff authorize-remote` (or `caff install-hooks`, which authorizes a longer agent-touch lease) once; subsequent `start`/`stop`/`agent-touch` reuse the Keychain lease until it expires. URL callers must include a short-lived single-use `ticket` query parameter from `caff remote-token` (same user-authorization gate) — never the durable install secret, because custom URL schemes are not exclusive. Do not expect another process to call `loadOrCreateToken()` against the executable-scoped Keychain item. Missing or wrong credentials are rejected before start/stop/agent-touch runs, while token-storage failures surface as normal errors.
+Signing those CLI DNC payloads also requires user authorization (`LocalAuthentication`) so a same-UID peer cannot silently use the trusted executable as a signing oracle. Run `caff authorize-remote` (or `caff install-hooks`, which authorizes a longer agent-touch lease) once; subsequent `start`/`stop`/`agent-touch` reuse the Keychain lease until it expires. URL callers must include a short-lived single-use `ticket` query parameter from `caff remote-token <action> ...` (same user-authorization gate); the ticket MAC binds the intended action and options so a hijacked URL handler cannot change what was authorized. Never put the durable install secret in a URL — custom URL schemes are not exclusive. Do not expect another process to call `loadOrCreateToken()` against the executable-scoped Keychain item. Missing or wrong credentials are rejected before start/stop/agent-touch runs, while token-storage failures surface as normal errors.
 
-Release builds should sign with a stable identity (`CAFF_CODESIGN_IDENTITY=... ./scripts/build_app.sh`) so Keychain ACLs continue to recognize the upgraded binary. Ad-hoc local builds (`codesign --sign -`) rotate the Keychain secret when an ACL from a previous binary rejects the replacement, avoiding stuck interactive prompts.
+Release builds should sign with a stable identity (`CAFF_CODESIGN_IDENTITY=... ./scripts/build_app.sh`) so Keychain ACLs continue to recognize the upgraded binary. The release script enables the hardened runtime (and therefore library validation) so an injected dylib cannot inherit the trusted executable's Keychain ACL. Ad-hoc local builds (`codesign --sign -`) rotate the Keychain secret when an ACL from a previous binary rejects the replacement, avoiding stuck interactive prompts.
 
 For long-running interactive agent CLIs, `agent-touch` refreshes a last-activity cooldown without relying on the `codex` or `claude` process exiting:
 
@@ -172,12 +172,14 @@ caff agent-touch --source codex --cooldown-seconds 1800
 
 Hook the agent events that fire during a turn to run that command. For Claude Code, use `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop`; for Codex, use the supported hook events in your `hooks.json`, such as `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop`. Caff keeps the Mac awake until 30 minutes after the latest agent event, then releases the assertion so macOS can follow its normal sleep policy.
 
-Obtain a one-time ticket for scripted `caff://` URLs with:
+Obtain a one-time ticket for scripted `caff://` URLs with the intended command bound into the ticket MAC:
 
 ```bash
-ticket="$(caff remote-token)"
+ticket="$(caff remote-token start --minutes 30 --reason agent)"
 open "caff://start?minutes=30&reason=agent&ticket=${ticket}"
 ```
+
+`remote-token` requires an action (`start`, `stop`, or `agent-touch`) plus the same options the URL will carry. A ticket minted for one action or option set is rejected if attached to a different command.
 
 If you run from the generated app bundle, the executable path is:
 
