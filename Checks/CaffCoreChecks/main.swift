@@ -338,17 +338,22 @@ do {
         check(error == .invalidToken, "remote auth should report invalid mac")
     }
 
-    let structured = try auth.sign([
+    // Fresh directory: the previous case intentionally left a forged nonce cache on disk.
+    let injectionDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("caff-core-checks-auth-inject-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: injectionDirectory) }
+    let injectionAuth = RemoteCommandAuth(directoryURL: injectionDirectory)
+    let structured = try injectionAuth.sign([
         "action": "start",
         "displayAwake": "true",
         "minutes": "30",
     ])
-    try auth.authenticate(structured)
+    try injectionAuth.authenticate(structured)
     var colliding = structured
     colliding["displayAwake"] = "true\nminutes=30"
     colliding.removeValue(forKey: "minutes")
     do {
-        try auth.verifySignedPayload(colliding)
+        try injectionAuth.verifySignedPayload(colliding)
         failures.append("remote auth should reject newline field repartition")
     } catch let error as RemoteCommandAuthError {
         check(error == .invalidToken, "remote auth should reject newline field repartition")
