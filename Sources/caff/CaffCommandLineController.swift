@@ -206,7 +206,9 @@ final class CaffCommandLineController {
             let option = arguments[index]
             switch option {
             case "--source":
-                result[RemoteCommandBridge.Key.agentSource] = try value(after: option, in: arguments, index: &index)
+                // Bind the same URL query key (`source`) so remote-token tickets MAC-match
+                // `caff://agent-touch?source=...` (not the DNC-only `agentSource` alias).
+                result[RemoteCommandBridge.Key.source] = try value(after: option, in: arguments, index: &index)
             case "--cooldown-seconds":
                 result[RemoteCommandBridge.Key.cooldownSeconds] = try value(after: option, in: arguments, index: &index)
             default:
