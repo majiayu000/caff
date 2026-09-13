@@ -136,30 +136,32 @@ enum RemoteCommandUserAuthorization {
         }
     }
 
-    /// After provisioning that consumed user presence, record a lease for the same
-    /// scope that authorized the remint so agent-touch-only installs are not promoted
-    /// into a general signing lease.
+    /// After provisioning that consumed user presence, rebind every lease scope that
+    /// was independently validated this process so a shared remint does not drop the
+    /// longer agent-touch authorization when a signing lease was also present.
     static func recordProvisioningLeaseIfNeeded(
         leaseSeconds: TimeInterval? = nil,
         now: Date = Date()
     ) {
         guard RemoteCommandAuth.hasRecentUserPresence(consume: true) else { return }
-        let scope = consumeValidatedProvisioningScope()
-        let seconds = leaseSeconds ?? (scope == .agentTouch ? hookLeaseSeconds : defaultLeaseSeconds)
-        do {
-            if try hasExactValidLease(scope: scope, now: now) {
-                return
+        let scopes = takeAllValidatedProvisioningScopes()
+        for (scope, preservedExpiry) in scopes {
+            let seconds = leaseSeconds ?? (scope == .agentTouch ? hookLeaseSeconds : defaultLeaseSeconds)
+            do {
+                if try hasExactValidLease(scope: scope, now: now) {
+                    continue
+                }
+                // Presence was just proven for remint; keep it noted through writeLease's
+                // loadOrCreateToken so we do not re-enter attestation.
+                RemoteCommandAuth.noteRecentUserPresence()
+                // Rebind to the original absolute expiry when a validated lease authorized
+                // this remint. A fresh full-duration window would let frequent hooks renew
+                // agent-touch authorization indefinitely without LocalAuthentication.
+                let expiresAt = preservedExpiry ?? now.addingTimeInterval(seconds).timeIntervalSince1970
+                try writeLease(scope: scope, expiresAt: expiresAt)
+            } catch {
+                // Best-effort — next launch may re-attest.
             }
-            // Presence was just proven for remint; keep it noted through writeLease's
-            // loadOrCreateToken so we do not re-enter attestation.
-            RemoteCommandAuth.noteRecentUserPresence()
-            // Rebind to the original absolute expiry when a validated lease authorized
-            // this remint. A fresh full-duration window would let frequent hooks renew
-            // agent-touch authorization indefinitely without LocalAuthentication.
-            let expiresAt = takeValidatedLeaseExpiry(scope) ?? now.addingTimeInterval(seconds).timeIntervalSince1970
-            try writeLease(scope: scope, expiresAt: expiresAt)
-        } catch {
-            // Best-effort — next launch may re-attest.
         }
     }
 
@@ -193,12 +195,6 @@ enum RemoteCommandUserAuthorization {
         validatedScopeLock.unlock()
     }
 
-    private static func takeValidatedLeaseExpiry(_ scope: Scope) -> TimeInterval? {
-        validatedScopeLock.lock()
-        defer { validatedScopeLock.unlock() }
-        return validatedLeaseExpiries.removeValue(forKey: scope)
-    }
-
     /// Absolute expiry of the lease that currently satisfies `scope`, if any.
     private static func validatedLeaseExpiry(for scope: Scope, now: Date) throws -> TimeInterval? {
         let timestamp = now.timeIntervalSince1970
@@ -219,35 +215,24 @@ enum RemoteCommandUserAuthorization {
         }
     }
 
-    /// Prefer signing when both were valid; otherwise the sole observed scope;
-    /// default to signing for LA-only presence without a prior lease probe.
-    private static func consumeValidatedProvisioningScope() -> Scope {
+    /// Returns every scope noted this process (with preserved expiry) so remint can
+    /// rebind signing and agent-touch independently. Defaults to signing when
+    /// presence was proven without a prior lease probe.
+    private static func takeAllValidatedProvisioningScopes() -> [(Scope, TimeInterval?)] {
         validatedScopeLock.lock()
         let scopes = validatedProvisioningScopes
         validatedProvisioningScopes.removeAll()
-        // Keep the expiry entry for the scope we return; drop the other.
-        let signingExpiry = validatedLeaseExpiries.removeValue(forKey: .signing)
-        let agentExpiry = validatedLeaseExpiries.removeValue(forKey: .agentTouch)
-        if scopes.contains(.signing) {
-            if let signingExpiry {
-                validatedLeaseExpiries[.signing] = signingExpiry
-            } else if let agentExpiry {
-                validatedLeaseExpiries[.signing] = agentExpiry
-            }
-            validatedScopeLock.unlock()
-            return .signing
+        var result: [(Scope, TimeInterval?)] = []
+        for scope in [Scope.signing, Scope.agentTouch] where scopes.contains(scope) {
+            result.append((scope, validatedLeaseExpiries.removeValue(forKey: scope)))
         }
-        if scopes.contains(.agentTouch) {
-            if let agentExpiry {
-                validatedLeaseExpiries[.agentTouch] = agentExpiry
-            } else if let signingExpiry {
-                validatedLeaseExpiries[.agentTouch] = signingExpiry
-            }
-            validatedScopeLock.unlock()
-            return .agentTouch
-        }
+        // Drop any leftover expiry entries that were not paired with a scope note.
+        validatedLeaseExpiries.removeAll()
         validatedScopeLock.unlock()
-        return .signing
+        if result.isEmpty {
+            return [(.signing, nil)]
+        }
+        return result
     }
 
     private static func hasExactValidLease(scope: Scope, now: Date) throws -> Bool {

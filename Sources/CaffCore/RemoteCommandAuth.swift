@@ -329,20 +329,18 @@ public final class AcceptedNonceStore: @unchecked Sendable {
             )
         }
 
-        let updateQuery: [String: Any] = [
+        // Never SecItemUpdate in place: a peer can recreate the predictable nonce
+        // account after we scrub it and keep their ACL across an update. Delete any
+        // pre-existing item, then recreate exclusively with our executable ACL.
+        let deleteStatus = SecItemDelete([
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: RemoteCommandAuth.keychainService,
             kSecAttrAccount as String: account,
-        ]
-        let updateAttrs: [String: Any] = [
-            kSecValueData as String: data,
-        ]
-        let updateStatus = SecItemUpdate(updateQuery as CFDictionary, updateAttrs as CFDictionary)
-        if updateStatus == errSecSuccess {
-            return
-        }
-        if updateStatus != errSecItemNotFound {
-            throw RemoteCommandAuthError.storageFailed("nonce keychain update failed (\(updateStatus))")
+        ] as CFDictionary)
+        guard deleteStatus == errSecSuccess || deleteStatus == errSecItemNotFound else {
+            throw RemoteCommandAuthError.storageFailed(
+                "nonce keychain replace-delete failed (\(deleteStatus))"
+            )
         }
 
         let access = try RemoteCommandAuth.makeExecutableScopedAccess(
@@ -363,13 +361,22 @@ public final class AcceptedNonceStore: @unchecked Sendable {
             status = SecItemAdd(addQuery as CFDictionary, nil)
         }
         if status == errSecDuplicateItem {
-            let retry = SecItemUpdate(updateQuery as CFDictionary, updateAttrs as CFDictionary)
-            guard retry == errSecSuccess else {
+            // Race: peer recreated between delete and add — remove again and retry once.
+            let retryDelete = SecItemDelete([
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: RemoteCommandAuth.keychainService,
+                kSecAttrAccount as String: account,
+            ] as CFDictionary)
+            guard retryDelete == errSecSuccess || retryDelete == errSecItemNotFound else {
                 throw RemoteCommandAuthError.storageFailed(
-                    "nonce keychain duplicate-update failed (\(retry))"
+                    "nonce keychain duplicate replace-delete failed (\(retryDelete))"
                 )
             }
-            return
+            status = SecItemAdd(addQuery as CFDictionary, nil)
+            if status == errSecParam {
+                addQuery.removeValue(forKey: kSecAttrAccessible as String)
+                status = SecItemAdd(addQuery as CFDictionary, nil)
+            }
         }
         guard status == errSecSuccess else {
             throw RemoteCommandAuthError.storageFailed("nonce keychain write failed (\(status))")
@@ -451,6 +458,15 @@ public struct RemoteCommandAuth: Sendable {
     private static let attestedClaimLock = NSLock()
     private static var attestedClaimKeys: Set<String> = []
 
+    /// Receiver credential sealed after this process provisioned or adopted a slot.
+    /// MAC verification consults this instead of blindly trusting a replaceable
+    /// public slot pointer + token a same-UID peer can delete and recreate.
+    private static let attestedVerificationLock = NSLock()
+    private static var attestedVerificationToken: String?
+    private static var attestedVerificationSlot: String?
+    /// Upper bound on unexpired retired secrets retained for the signature window.
+    private static let maxRetiredVerificationSecrets = 16
+
     /// Tokens whose HMAC-bound signing lease was verified this process. A valid
     /// lease proves prior user presence for remint (skip LocalAuthentication) but
     /// does *not* prove token provenance — peers who plant a token can also plant
@@ -528,23 +544,71 @@ public struct RemoteCommandAuth: Sendable {
     /// Reads an already-provisioned secret for MAC/ticket verification without reminting.
     private func readProvisionedTokenForVerification() throws -> String? {
         if usesKeychain {
-            return try peekProvisionedKeychainToken()
+            return try attestedOrLegitimateRemintTokenForVerification()
         }
         return try readTokenIfPresent()
     }
 
-    /// Live secret first, then a short-lived retired prior secret (Keychain only).
+    /// Prefers the process-local attested receiver secret. A peer-replaced slot
+    /// pointer/token is ignored unless the attested secret appears in the retired
+    /// set for the same slot (legitimate CLI remint within the signature window).
+    private func attestedOrLegitimateRemintTokenForVerification() throws -> String? {
+        Self.attestedVerificationLock.lock()
+        let attestedToken = Self.attestedVerificationToken
+        let attestedSlot = Self.attestedVerificationSlot
+        Self.attestedVerificationLock.unlock()
+
+        guard let attestedToken,
+              let attestedSlot,
+              Self.isProvisionedToken(attestedToken)
+        else {
+            // No in-process attestation yet — never verify against a replaceable peek.
+            return nil
+        }
+
+        guard let liveSlot = try Self.readKeychainSlotAccountValue() else {
+            return attestedToken
+        }
+        guard liveSlot == attestedSlot else {
+            // Public pointer redirected to a different private account — keep ours.
+            return attestedToken
+        }
+        guard let live = try readKeychainToken(account: liveSlot),
+              Self.isProvisionedToken(live)
+        else {
+            return attestedToken
+        }
+        if Self.constantTimeEquals(live, attestedToken) {
+            return live
+        }
+        let retired = try readRetiredTokens(forSlot: liveSlot)
+        if retired.contains(where: { Self.constantTimeEquals($0, attestedToken) }) {
+            Self.rememberAttestedVerificationSecret(live, slotAccount: liveSlot)
+            return live
+        }
+        // Unauthenticated live-secret replacement — keep verifying with attested.
+        return attestedToken
+    }
+
+    /// Live secret first, then every still-unexpired retired prior secret (Keychain).
     private func verificationSecrets(primary: String) throws -> [String] {
         var secrets = [primary]
         guard usesKeychain else { return secrets }
-        guard let slot = try Self.readKeychainSlotAccountValue(),
-              let retired = try readRetiredToken(forSlot: slot),
-              !Self.constantTimeEquals(retired, primary)
-        else {
-            return secrets
+        guard let slot = try Self.readKeychainSlotAccountValue() else { return secrets }
+        for retired in try readRetiredTokens(forSlot: slot) {
+            if secrets.contains(where: { Self.constantTimeEquals($0, retired) }) {
+                continue
+            }
+            secrets.append(retired)
         }
-        secrets.append(retired)
         return secrets
+    }
+
+    private static func rememberAttestedVerificationSecret(_ token: String, slotAccount: String) {
+        attestedVerificationLock.lock()
+        attestedVerificationToken = token
+        attestedVerificationSlot = slotAccount
+        attestedVerificationLock.unlock()
     }
 
     /// Records that `token` was authenticated by an HMAC-valid signing lease.
@@ -801,6 +865,9 @@ public struct RemoteCommandAuth: Sendable {
             }
             switch outcome {
             case let .token(token):
+                if let slot = try Self.readKeychainSlotAccountValue() {
+                    Self.rememberAttestedVerificationSecret(token, slotAccount: slot)
+                }
                 return token
             case .restartSlot:
                 continue
@@ -1765,14 +1832,91 @@ public struct RemoteCommandAuth: Sendable {
     }
 
     /// Retains `token` for the signature window so verification can accept in-flight
-    /// MACs after a lease-validated remint rotates the live secret.
+    /// MACs after a lease-validated remint rotates the live secret. Keeps a bounded
+    /// set of still-unexpired priors so T0→T1→T2→T3 does not drop T1 while it is live.
     private func rememberRetiredToken(_ token: String, slotAccount: String) throws {
         let expiresAt = Int(now().timeIntervalSince1970 + Self.signatureMaxAgeSeconds)
-        let payload = "v1:\(expiresAt):\(token)"
+        var entries = try loadRetiredTokenEntries(forSlot: slotAccount)
+        let nowTs = now().timeIntervalSince1970
+        entries = entries.filter { TimeInterval($0.expiresAt) > nowTs }
+        entries.removeAll { Self.constantTimeEquals($0.token, token) }
+        entries.append((expiresAt: expiresAt, token: token))
+        if entries.count > Self.maxRetiredVerificationSecrets {
+            entries = Array(entries.suffix(Self.maxRetiredVerificationSecrets))
+        }
+        try saveRetiredTokenEntries(entries, forSlot: slotAccount)
+    }
+
+    private func readRetiredToken(forSlot slotAccount: String) throws -> String? {
+        try readRetiredTokens(forSlot: slotAccount).first
+    }
+
+    private func readRetiredTokens(forSlot slotAccount: String) throws -> [String] {
+        let nowTs = now().timeIntervalSince1970
+        let all = try loadRetiredTokenEntries(forSlot: slotAccount)
+        let live = all.filter { TimeInterval($0.expiresAt) > nowTs }
+        if live.count != all.count {
+            try? saveRetiredTokenEntries(live, forSlot: slotAccount)
+        }
+        return live.map(\.token)
+    }
+
+    private func loadRetiredTokenEntries(
+        forSlot slotAccount: String
+    ) throws -> [(expiresAt: Int, token: String)] {
+        let account = Self.retiredTokenAccount(forSlot: slotAccount)
+        guard let raw = try readRetiredTokenRaw(account: account) else {
+            return []
+        }
+        if raw.hasPrefix("v2\n") {
+            var entries: [(expiresAt: Int, token: String)] = []
+            for line in raw.dropFirst(3).split(separator: "\n", omittingEmptySubsequences: true) {
+                let body = String(line)
+                guard let split = body.firstIndex(of: ":") else {
+                    continue
+                }
+                let expiryRaw = String(body[..<split])
+                let token = String(body[body.index(after: split)...])
+                guard let expiresAt = Int(expiryRaw), Self.isProvisionedToken(token) else {
+                    continue
+                }
+                entries.append((expiresAt: expiresAt, token: token))
+            }
+            return entries
+        }
+        // Legacy single-entry payload: v1:<expiresAtSeconds>:<token>
+        guard raw.hasPrefix("v1:") else {
+            try deleteKeychainAccount(account, context: "retired token corrupt remove")
+            return []
+        }
+        let body = String(raw.dropFirst(3))
+        guard let split = body.firstIndex(of: ":") else {
+            try deleteKeychainAccount(account, context: "retired token corrupt remove")
+            return []
+        }
+        let expiryRaw = String(body[..<split])
+        let token = String(body[body.index(after: split)...])
+        guard let expiresAt = Int(expiryRaw), Self.isProvisionedToken(token) else {
+            try deleteKeychainAccount(account, context: "retired token corrupt remove")
+            return []
+        }
+        return [(expiresAt: expiresAt, token: token)]
+    }
+
+    private func saveRetiredTokenEntries(
+        _ entries: [(expiresAt: Int, token: String)],
+        forSlot slotAccount: String
+    ) throws {
+        let account = Self.retiredTokenAccount(forSlot: slotAccount)
+        if entries.isEmpty {
+            try deleteKeychainAccount(account, context: "retired token clear")
+            return
+        }
+        let body = entries.map { "\($0.expiresAt):\($0.token)" }.joined(separator: "\n")
+        let payload = "v2\n\(body)"
         guard let data = payload.data(using: .utf8) else {
             throw RemoteCommandAuthError.storageFailed("retired token payload is not UTF-8")
         }
-        let account = Self.retiredTokenAccount(forSlot: slotAccount)
         try deleteKeychainAccount(account, context: "retired token replace")
         let access = try Self.makeExecutableScopedAccess(descriptor: "Caff remote command retired token")
         var addQuery: [String: Any] = [
@@ -1789,13 +1933,20 @@ public struct RemoteCommandAuth: Sendable {
             addQuery.removeValue(forKey: kSecAttrAccessible as String)
             status = SecItemAdd(addQuery as CFDictionary, nil)
         }
-        guard status == errSecSuccess || status == errSecDuplicateItem else {
+        if status == errSecDuplicateItem {
+            try deleteKeychainAccount(account, context: "retired token duplicate replace")
+            status = SecItemAdd(addQuery as CFDictionary, nil)
+            if status == errSecParam {
+                addQuery.removeValue(forKey: kSecAttrAccessible as String)
+                status = SecItemAdd(addQuery as CFDictionary, nil)
+            }
+        }
+        guard status == errSecSuccess else {
             throw RemoteCommandAuthError.storageFailed("retired token write failed (\(status))")
         }
     }
 
-    private func readRetiredToken(forSlot slotAccount: String) throws -> String? {
-        let account = Self.retiredTokenAccount(forSlot: slotAccount)
+    private func readRetiredTokenRaw(account: String) throws -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.keychainService,
@@ -1819,29 +1970,7 @@ public struct RemoteCommandAuth: Sendable {
         else {
             return nil
         }
-        // Expected: v1:<expiresAtSeconds>:<token>
-        guard raw.hasPrefix("v1:") else {
-            try deleteKeychainAccount(account, context: "retired token corrupt remove")
-            return nil
-        }
-        let body = String(raw.dropFirst(3))
-        guard let split = body.firstIndex(of: ":") else {
-            try deleteKeychainAccount(account, context: "retired token corrupt remove")
-            return nil
-        }
-        let expiryRaw = String(body[..<split])
-        let token = String(body[body.index(after: split)...])
-        guard let expiresAt = Int(expiryRaw),
-              Self.isProvisionedToken(token)
-        else {
-            try deleteKeychainAccount(account, context: "retired token corrupt remove")
-            return nil
-        }
-        if TimeInterval(expiresAt) <= now().timeIntervalSince1970 {
-            try deleteKeychainAccount(account, context: "retired token expired remove")
-            return nil
-        }
-        return token
+        return raw
     }
 
     /// Removes a nonce map only when the associated token is gone or still the

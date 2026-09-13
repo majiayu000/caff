@@ -116,6 +116,7 @@ final class CaffCommandLineController {
                 throw CaffCommandLineError.authorizationRequired(error.description)
             }
             try ensureAppRunning()
+            RemoteCommandBridge.postRetryProvision()
             _ = try RemoteCommandAuth().loadOrCreateToken()
             RemoteCommandUserAuthorization.recordProvisioningLeaseIfNeeded()
             let ticket = try RemoteCommandAuth().issueURLTicket(binding: binding)
