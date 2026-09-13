@@ -1847,10 +1847,6 @@ public struct RemoteCommandAuth: Sendable {
         try saveRetiredTokenEntries(entries, forSlot: slotAccount)
     }
 
-    private func readRetiredToken(forSlot slotAccount: String) throws -> String? {
-        try readRetiredTokens(forSlot: slotAccount).first
-    }
-
     private func readRetiredTokens(forSlot slotAccount: String) throws -> [String] {
         let nowTs = now().timeIntervalSince1970
         let all = try loadRetiredTokenEntries(forSlot: slotAccount)
