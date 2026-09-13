@@ -419,14 +419,15 @@ public struct RemoteCommandAuth: Sendable {
     /// (fail closed → remint without prompting).
     public static var slotClaimAttestationHandler: (() throws -> Void)?
 
-    /// Process-local set of claim keys this launch already sealed (after our mint
-    /// or a lease-validated adopt) so repeated loads do not re-prompt or remint.
+    /// Process-local set of claim keys this launch already sealed (after our mint)
+    /// so repeated loads do not re-prompt or remint.
     private static let attestedClaimLock = NSLock()
     private static var attestedClaimKeys: Set<String> = []
 
     /// Tokens whose HMAC-bound signing lease was verified this process. A valid
-    /// lease proves prior user presence bound to that secret, so fresh CLI/hook
-    /// processes may adopt without re-attesting the slot claim.
+    /// lease proves prior user presence for remint (skip LocalAuthentication) but
+    /// does *not* prove token provenance — peers who plant a token can also plant
+    /// a matching lease.
     private static let leaseValidatedLock = NSLock()
     private static var leaseValidatedTokens: Set<String> = []
 
@@ -487,7 +488,7 @@ public struct RemoteCommandAuth: Sendable {
 
     /// Best-effort read of an already-provisioned Keychain token without claim
     /// attestation or remint. Used for lease MAC verification so a valid lease can
-    /// gate adopt without a chicken-and-egg prompt.
+    /// skip LocalAuthentication during remint without a chicken-and-egg prompt.
     public func peekProvisionedKeychainToken() throws -> String? {
         guard usesKeychain else { return nil }
         guard let slot = try Self.readKeychainSlotAccountValue() else { return nil }
@@ -498,6 +499,8 @@ public struct RemoteCommandAuth: Sendable {
     }
 
     /// Records that `token` was authenticated by an HMAC-valid signing lease.
+    /// Callers may remint without re-prompting; they must not adopt the secret
+    /// solely on this signal (leases are plantable with a planted token).
     public static func noteLeaseValidatedToken(_ token: String) {
         leaseValidatedLock.lock()
         leaseValidatedTokens.insert(token)
@@ -758,6 +761,9 @@ public struct RemoteCommandAuth: Sendable {
                         try ensureNonceStore(forToken: existing, nonceAccount: nonceAccount)
                         return existing
                     } catch {
+                        // Nonce map missing/corrupt under an otherwise adopted token.
+                        // Rotate the secret and require a fresh lease rebind via presence.
+                        Self.noteRecentUserPresence()
                         try deleteKeychainTokenIfMatches(
                             account: slot.account,
                             expected: existing,
@@ -799,6 +805,7 @@ public struct RemoteCommandAuth: Sendable {
                         try ensureNonceStore(forToken: winner, nonceAccount: nonceAccount)
                         return winner
                     } catch {
+                        Self.noteRecentUserPresence()
                         try deleteKeychainTokenIfMatches(
                             account: slot.account,
                             expected: winner,
@@ -888,14 +895,13 @@ public struct RemoteCommandAuth: Sendable {
 
     /// First successful claim under the public slot pointer owns the secret.
     ///
-    /// A same-UID peer can preplant `keychain-slot`, a matching token, and even
-    /// `slotClaimValue(forToken:)` (HMAC is peer-computable from the token). A
-    /// pre-existing matching claim is therefore *not* proof of Caff provenance.
-    /// Provenance is: exclusive create of the per-slot claim by a live process
-    /// (then remint), a process-local seal after our mint, or an HMAC-valid
-    /// signing lease bound to this token. LocalAuthentication proves user presence
-    /// but not credential provenance — after attesting a pre-existing claim we
-    /// remint rather than adopt the possibly attacker-known secret.
+    /// A same-UID peer can preplant `keychain-slot`, a matching token, claim HMAC,
+    /// and even an HMAC-valid signing lease (lease MAC is peer-computable from the
+    /// planted token). Pre-existing claim/lease material is therefore *not* proof of
+    /// Caff provenance. Provenance is: exclusive create of the per-slot claim by a
+    /// live process (then remint), or a process-local seal after our mint.
+    /// LocalAuthentication / a verified lease prove user presence for remint but
+    /// never authorize adopting a possibly attacker-known secret.
     private func claimSlotOwnership(claimAccount: String, token: String) throws -> SlotClaimResult {
         let expected = Self.slotClaimValue(forToken: token)
         let attestationKey = claimAccount + "|" + expected
@@ -907,40 +913,31 @@ public struct RemoteCommandAuth: Sendable {
                 // We created the claim against a possibly preplanted token — remint.
                 return .remint
             } catch {
-                // Lost the claim create race to another live process; adopt only if
-                // the winner matches this token.
-                guard let winnerClaim = try readSlotClaimValue(claimAccount: claimAccount),
-                      Self.constantTimeEquals(winnerClaim, expected)
-                else {
-                    return .remint
-                }
-                Self.sealAttestedClaimKey(attestationKey)
-                return .adopt
+                // Lost the claim create race. A peer can SecItemAdd a matching claim
+                // for a planted token in that window — do not treat the race as provenance.
+                return .remint
             }
         }
 
-        // Claim already existed before this live attempt — may be peer-planted.
-        // A verified signing lease bound to this token proves prior authorized
-        // provisioning across processes without re-prompting.
-        if Self.isLeaseValidatedToken(token) {
-            Self.sealAttestedClaimKey(attestationKey)
-            return .adopt
-        }
-
-        // Same-process seal after our mint (or prior lease adopt) — reuse.
+        // Same-process seal after our mint — reuse without rotating again.
         if Self.hasAttestedClaimKey(attestationKey) {
             return .adopt
         }
 
-        // First encounter of an untrusted pre-existing claim: require user presence
-        // outside the provisioning lock, then remint. Do not adopt the attacker-known
-        // secret after LA. Presence is left noted so the caller can record a lease.
-        if Self.hasRecentUserPresence(consume: false) {
+        // Lease-validated tokens skip LocalAuthentication but still remint: peers who
+        // plant the token can also plant a matching lease.
+        let presenceProven = Self.hasRecentUserPresence(consume: false)
+            || Self.isLeaseValidatedToken(token)
+        if presenceProven {
             guard let existingClaim = try readSlotClaimValue(claimAccount: claimAccount),
                   Self.constantTimeEquals(existingClaim, expected)
             else {
                 try deleteKeychainAccount(claimAccount, context: "slot claim mismatch remove")
                 return .remint
+            }
+            // Keep presence noted so the caller can record a lease for the reminted secret.
+            if Self.isLeaseValidatedToken(token) {
+                Self.noteRecentUserPresence()
             }
             try deleteKeychainAccount(claimAccount, context: "preplant claim rotate after attestation")
             return .remint
@@ -966,15 +963,16 @@ public struct RemoteCommandAuth: Sendable {
         return try body()
     }
 
-    /// Lock payload: owner PID + wall-clock expiry so abandoned items left by a
-    /// killed process (especially during LA under the lock) can be reclaimed.
-    private static let keychainLockTTL: TimeInterval = 90
+    /// Lock payload: owner PID + wall-clock fencing hint. Abandoned locks left by a
+    /// *dead* holder are reclaimed; a still-living owner is never preempted on expiry
+    /// alone (sleep/suspend must not allow overlapping successors).
+    private static let keychainLockTTL: TimeInterval = 600
 
     fileprivate static func acquireKeychainLock(account: String, label: String) throws {
         let access = try makeExecutableScopedAccess(descriptor: label)
         var lastStatus: OSStatus = errSecSuccess
         // Bounded spin: another live Caff process may hold the lock briefly.
-        for _ in 0..<200 {
+        for _ in 0..<400 {
             let payload = keychainLockPayload(expiresAt: Date().timeIntervalSince1970 + keychainLockTTL)
             guard let data = payload.data(using: .utf8) else {
                 throw RemoteCommandAuthError.storageFailed("keychain lock payload is not UTF-8")
@@ -1012,6 +1010,20 @@ public struct RemoteCommandAuth: Sendable {
         "v1:\(getpid()):\(Int(expiresAt))"
     }
 
+    private static func parseKeychainLockPayload(_ raw: String) -> (pid: pid_t, expiresAt: TimeInterval)? {
+        guard raw.hasPrefix("v1:"),
+              let pidSplit = raw.dropFirst(3).firstIndex(of: ":")
+        else {
+            return nil
+        }
+        let pidRaw = String(raw[raw.index(raw.startIndex, offsetBy: 3)..<pidSplit])
+        let expiryRaw = String(raw[raw.index(after: pidSplit)...])
+        guard let pid = pid_t(pidRaw), let expiresAt = TimeInterval(expiryRaw) else {
+            return nil
+        }
+        return (pid, expiresAt)
+    }
+
     private static func reclaimStaleKeychainLockIfNeeded(account: String) throws -> Bool {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -1027,7 +1039,7 @@ public struct RemoteCommandAuth: Sendable {
             return true
         }
         if status == errSecAuthFailed || status == errSecInteractionNotAllowed {
-            try releaseKeychainLock(account: account)
+            try forceReleaseKeychainLock(account: account)
             return true
         }
         guard status == errSecSuccess,
@@ -1039,25 +1051,17 @@ public struct RemoteCommandAuth: Sendable {
 
         // Legacy UUID-only locks (no owner metadata) are treated as reclaimable so
         // a killed holder cannot permanently wedge provisioning.
-        guard raw.hasPrefix("v1:"),
-              let pidSplit = raw.dropFirst(3).firstIndex(of: ":")
-        else {
-            try releaseKeychainLock(account: account)
-            return true
-        }
-        let pidRaw = String(raw[raw.index(raw.startIndex, offsetBy: 3)..<pidSplit])
-        let expiryRaw = String(raw[raw.index(after: pidSplit)...])
-        guard let pid = pid_t(pidRaw), let expiresAt = TimeInterval(expiryRaw) else {
-            try releaseKeychainLock(account: account)
+        guard let parsed = parseKeychainLockPayload(raw) else {
+            try forceReleaseKeychainLock(account: account)
             return true
         }
 
-        let expired = Date().timeIntervalSince1970 >= expiresAt
-        let ownerDead = !isProcessAlive(pid)
-        guard expired || ownerDead else {
+        // Only reclaim when the owner is dead. Wall-clock expiry alone must not
+        // preempt a suspended/sleeping holder that can still resume and mutate state.
+        guard !isProcessAlive(parsed.pid) else {
             return false
         }
-        try releaseKeychainLock(account: account)
+        try forceReleaseKeychainLock(account: account)
         return true
     }
 
@@ -1067,7 +1071,43 @@ public struct RemoteCommandAuth: Sendable {
         return errno == EPERM
     }
 
+    /// Owner-matched release: a deferred unlock must not delete a successor's lock
+    /// if this process outlived its TTL and another process reclaimed+reacquired.
     fileprivate static func releaseKeychainLock(account: String) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound {
+            return
+        }
+        if status == errSecAuthFailed || status == errSecInteractionNotAllowed {
+            return
+        }
+        guard status == errSecSuccess,
+              let data = item as? Data,
+              let raw = String(data: data, encoding: .utf8)
+        else {
+            return
+        }
+        // Legacy UUID locks have no owner metadata — only the creator should clear
+        // them, and we cannot prove ownership; leave them for dead-owner reclaim.
+        guard let parsed = parseKeychainLockPayload(raw) else {
+            return
+        }
+        guard parsed.pid == getpid() else {
+            return
+        }
+        try forceReleaseKeychainLock(account: account)
+    }
+
+    private static func forceReleaseKeychainLock(account: String) throws {
         let status = SecItemDelete([
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,

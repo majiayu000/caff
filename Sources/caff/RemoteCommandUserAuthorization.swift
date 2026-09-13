@@ -10,8 +10,10 @@ import Security
 /// the user already completed LocalAuthentication. Creating or refreshing that lease
 /// always requires user presence; merely launching Caff is not enough.
 ///
-/// Lease payloads are HMAC-bound to the install token so a peer cannot preplant a
-/// far-future timestamp under the public lease account and skip LocalAuthentication.
+/// Lease payloads are HMAC-bound to the install token so a peer cannot forge a
+/// lease for a Caff-minted secret. Peers who plant both token and lease can still
+/// produce a valid MAC — bootstrap therefore remints on lease presence rather than
+/// adopting the possibly attacker-known secret.
 ///
 /// Leases are scoped: the long-lived install-hooks lease authorizes `agent-touch` only.
 /// `start` / `stop` require a general signing lease (or a fresh prompt).
@@ -77,13 +79,15 @@ enum RemoteCommandUserAuthorization {
         try writeLease(scope: scope, expiresAt: now.addingTimeInterval(leaseSeconds).timeIntervalSince1970)
     }
 
-    /// Always prompts for user presence and never consults or refreshes a signing lease.
-    /// Used when revealing the reusable install token — a lease must not become permanent
-    /// credential disclosure.
+    /// Always prompts for user presence and never consults a signing lease.
+    /// Notes presence so a subsequent remint/provision can record a fresh lease
+    /// the receiver can validate without treating plantable leases as provenance.
+    /// Used when revealing URL tickets — a prior lease must not mint tickets.
     static func requireFreshAuthorization(
         reason: String
     ) throws {
         try authenticateUser(reason: reason)
+        RemoteCommandAuth.noteRecentUserPresence()
     }
 
     /// Registers LocalAuthentication as the gate when Caff must rotate a pre-existing
@@ -98,7 +102,8 @@ enum RemoteCommandUserAuthorization {
     }
 
     /// If an HMAC-valid signing lease is present, note its token so Keychain bootstrap
-    /// can adopt across fresh CLI/app processes without re-prompting LocalAuthentication.
+    /// can remint across fresh CLI/app processes without re-prompting LocalAuthentication.
+    /// Lease validity never authorizes adopting a preplanted secret.
     static func noteValidLeasesIfPresent(now: Date = Date()) {
         do {
             _ = try hasValidLease(for: .agentTouch, now: now)

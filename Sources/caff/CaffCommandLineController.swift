@@ -90,7 +90,10 @@ final class CaffCommandLineController {
             // Issue a short-lived single-use URL ticket bound to the intended
             // command — never print the durable install secret (custom URL
             // schemes are not an exclusive channel). Fresh user presence is
-            // required; signing/hook leases must not mint tickets.
+            // required; signing/hook leases must not mint tickets. Provision
+            // under that presence and persist a signing lease before issuing so
+            // the receiver remints/rebinds against proof of this authorization
+            // instead of treating the CLI claim as unattested.
             do {
                 try RemoteCommandUserAuthorization.requireFreshAuthorization(
                     reason: "Authorize Caff to issue a remote-control URL ticket"
@@ -98,6 +101,8 @@ final class CaffCommandLineController {
             } catch let error as RemoteCommandUserAuthorization.Error {
                 throw CaffCommandLineError.authorizationRequired(error.description)
             }
+            _ = try RemoteCommandAuth().loadOrCreateToken()
+            RemoteCommandUserAuthorization.recordProvisioningLeaseIfNeeded()
             let ticket = try RemoteCommandAuth().issueURLTicket(binding: binding)
             print(ticket)
         case "install-hooks":
