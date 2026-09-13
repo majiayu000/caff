@@ -300,6 +300,9 @@ public struct RemoteCommandAuth: Sendable {
     public static let keychainService = "local.caff.remote-command"
     public static let keychainAccount = "install-token"
     public static let keychainNonceAccount = "accepted-nonces"
+    /// Prefix baked into secrets Caff mints. A preplanted generic-password under the
+    /// public account name that lacks this prefix is rejected and rotated.
+    public static let provisionedTokenPrefix = "caff-v1:"
 
     public enum PayloadKey {
         public static let token = "token"
@@ -421,25 +424,34 @@ public struct RemoteCommandAuth: Sendable {
     // MARK: - Keychain-backed production store
 
     private func loadOrCreateKeychainToken() throws -> String {
-        if let existing = try readKeychainToken() {
+        if let existing = try readKeychainToken(), Self.isProvisionedToken(existing) {
             return existing
         }
-        // Never copy a same-UID-writable legacy file into Keychain — a peer could
-        // plant a known value before first launch. Delete any leftover file and
-        // mint a fresh executable-scoped secret instead.
+        // Never adopt a same-UID-preplanted Keychain secret. Public service/account
+        // items without our provisioned prefix are deleted (delete must succeed) and
+        // replaced with a Caff-minted value.
+        if try readKeychainToken() != nil {
+            try deleteKeychainAccount(Self.keychainAccount, context: "preplant token remove")
+            try deleteKeychainAccount(Self.keychainNonceAccount, context: "preplant nonce remove")
+        }
         try removeLegacyTokenFileIfPresent()
 
-        let token = try Self.generateToken()
+        let token = Self.provisionedTokenPrefix + (try Self.generateToken())
         do {
             try writeKeychainToken(token)
             return token
         } catch {
-            // Lost a create race — return the winner's stored secret, never ours.
-            if let existing = try readKeychainToken() {
+            // Lost a create race — return the winner's provisioned secret, never ours.
+            if let existing = try readKeychainToken(), Self.isProvisionedToken(existing) {
                 return existing
             }
             throw error
         }
+    }
+
+    private static func isProvisionedToken(_ token: String) -> Bool {
+        token.hasPrefix(provisionedTokenPrefix)
+            && token.count == provisionedTokenPrefix.count + tokenByteCount * 2
     }
 
     private func readKeychainToken() throws -> String? {
@@ -459,16 +471,8 @@ public struct RemoteCommandAuth: Sendable {
         // scoped ACL may reject the replacement binary. Rotate rather than hang on an
         // interactive Keychain prompt that breaks unattended CLI/hooks.
         if status == errSecAuthFailed || status == errSecInteractionNotAllowed {
-            _ = SecItemDelete([
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: Self.keychainService,
-                kSecAttrAccount as String: Self.keychainAccount,
-            ] as CFDictionary)
-            _ = SecItemDelete([
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: Self.keychainService,
-                kSecAttrAccount as String: Self.keychainNonceAccount,
-            ] as CFDictionary)
+            try deleteKeychainAccount(Self.keychainAccount, context: "token ACL rotate")
+            try deleteKeychainAccount(Self.keychainNonceAccount, context: "nonce ACL rotate")
             return nil
         }
         guard status == errSecSuccess else {
@@ -485,6 +489,17 @@ public struct RemoteCommandAuth: Sendable {
         return token
     }
 
+    private func deleteKeychainAccount(_ account: String, context: String) throws {
+        let status = SecItemDelete([
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.keychainService,
+            kSecAttrAccount as String: account,
+        ] as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw RemoteCommandAuthError.storageFailed("\(context) failed (\(status))")
+        }
+    }
+
     private func writeKeychainToken(_ token: String) throws {
         guard let data = token.data(using: .utf8) else {
             throw RemoteCommandAuthError.storageFailed("token is not valid UTF-8")
@@ -492,6 +507,7 @@ public struct RemoteCommandAuth: Sendable {
 
         // Add-only: never SecItemDelete then Add. Concurrent first-run creators must
         // not invalidate each other's returned secret by wiping a just-published item.
+        // Preplant cleanup happens before minting when an unprefixed item is present.
         let access = try Self.makeExecutableScopedAccess(descriptor: "Caff remote command token")
 
         var addQuery: [String: Any] = [

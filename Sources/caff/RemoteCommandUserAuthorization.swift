@@ -9,8 +9,17 @@ import Security
 /// A short-lived Keychain lease (same executable ACL as the install token) records that
 /// the user already completed LocalAuthentication. Creating or refreshing that lease
 /// always requires user presence; merely launching Caff is not enough.
+///
+/// Leases are scoped: the long-lived install-hooks lease authorizes `agent-touch` only.
+/// `start` / `stop` require a general signing lease (or a fresh prompt).
 enum RemoteCommandUserAuthorization {
-    static let keychainAccount = "cli-signing-lease"
+    enum Scope: String {
+        /// start / stop / authorize-remote / general CLI signing.
+        case signing = "cli-signing-lease"
+        /// install-hooks / agent-touch only — must not satisfy start/stop.
+        case agentTouch = "cli-agent-touch-lease"
+    }
+
     static let defaultLeaseSeconds: TimeInterval = 12 * 60 * 60
     /// Install-hooks is an explicit user action; grant a longer unattended window for agent-touch.
     static let hookLeaseSeconds: TimeInterval = 30 * 24 * 60 * 60
@@ -32,27 +41,62 @@ enum RemoteCommandUserAuthorization {
         }
     }
 
-    /// Ensures a valid signing lease exists, prompting for user presence when needed.
+    /// Ensures a valid signing lease exists for `scope`, prompting for user presence when needed.
+    ///
+    /// - `signing` accepts only the general signing lease.
+    /// - `agentTouch` accepts the agent-touch lease or the general signing lease (superset).
     static func ensureAuthorized(
+        scope: Scope = .signing,
         reason: String = "Authorize Caff to sign a local remote-control command",
         leaseSeconds: TimeInterval = defaultLeaseSeconds,
         now: Date = Date()
     ) throws {
-        if let expiresAt = try readLeaseExpiresAt(), expiresAt > now.timeIntervalSince1970 {
+        if try hasValidLease(for: scope, now: now) {
             return
         }
         try authenticateUser(reason: reason)
-        try writeLease(expiresAt: now.addingTimeInterval(leaseSeconds).timeIntervalSince1970)
+        try writeLease(scope: scope, expiresAt: now.addingTimeInterval(leaseSeconds).timeIntervalSince1970)
     }
 
-    /// Always prompts, then writes a fresh lease. Used by `authorize-remote` and install-hooks.
+    /// Always prompts, then writes a fresh lease for `scope`.
+    /// Used by `authorize-remote` and install-hooks.
     static func authorize(
+        scope: Scope = .signing,
         reason: String,
         leaseSeconds: TimeInterval = defaultLeaseSeconds,
         now: Date = Date()
     ) throws {
         try authenticateUser(reason: reason)
-        try writeLease(expiresAt: now.addingTimeInterval(leaseSeconds).timeIntervalSince1970)
+        try writeLease(scope: scope, expiresAt: now.addingTimeInterval(leaseSeconds).timeIntervalSince1970)
+    }
+
+    /// Always prompts for user presence and never consults or refreshes a signing lease.
+    /// Used when revealing the reusable install token — a lease must not become permanent
+    /// credential disclosure.
+    static func requireFreshAuthorization(
+        reason: String
+    ) throws {
+        try authenticateUser(reason: reason)
+    }
+
+    private static func hasValidLease(for scope: Scope, now: Date) throws -> Bool {
+        let timestamp = now.timeIntervalSince1970
+        switch scope {
+        case .signing:
+            if let expiresAt = try readLeaseExpiresAt(scope: .signing), expiresAt > timestamp {
+                return true
+            }
+            return false
+        case .agentTouch:
+            if let expiresAt = try readLeaseExpiresAt(scope: .agentTouch), expiresAt > timestamp {
+                return true
+            }
+            // A general signing authorization also covers agent-touch.
+            if let expiresAt = try readLeaseExpiresAt(scope: .signing), expiresAt > timestamp {
+                return true
+            }
+            return false
+        }
     }
 
     private static func authenticateUser(reason: String) throws {
@@ -81,11 +125,11 @@ enum RemoteCommandUserAuthorization {
         }
     }
 
-    private static func readLeaseExpiresAt() throws -> TimeInterval? {
+    private static func readLeaseExpiresAt(scope: Scope) throws -> TimeInterval? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: RemoteCommandAuth.keychainService,
-            kSecAttrAccount as String: keychainAccount,
+            kSecAttrAccount as String: scope.rawValue,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
@@ -96,11 +140,10 @@ enum RemoteCommandUserAuthorization {
         }
         // After an ad-hoc upgrade the ACL may reject the new binary — treat as no lease.
         if status == errSecAuthFailed || status == errSecInteractionNotAllowed {
-            _ = SecItemDelete([
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: RemoteCommandAuth.keychainService,
-                kSecAttrAccount as String: keychainAccount,
-            ] as CFDictionary)
+            try deleteKeychainItem(
+                account: scope.rawValue,
+                context: "lease rotate"
+            )
             return nil
         }
         guard status == errSecSuccess else {
@@ -117,7 +160,7 @@ enum RemoteCommandUserAuthorization {
         return expiresAt
     }
 
-    private static func writeLease(expiresAt: TimeInterval) throws {
+    private static func writeLease(scope: Scope, expiresAt: TimeInterval) throws {
         guard let data = String(Int(expiresAt)).data(using: .utf8) else {
             throw Error.storageFailed("lease timestamp is not UTF-8")
         }
@@ -125,7 +168,7 @@ enum RemoteCommandUserAuthorization {
         let updateQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: RemoteCommandAuth.keychainService,
-            kSecAttrAccount as String: keychainAccount,
+            kSecAttrAccount as String: scope.rawValue,
         ]
         let updateAttrs: [String: Any] = [kSecValueData as String: data]
         let updateStatus = SecItemUpdate(updateQuery as CFDictionary, updateAttrs as CFDictionary)
@@ -135,7 +178,7 @@ enum RemoteCommandUserAuthorization {
         if updateStatus != errSecItemNotFound {
             // Stale ACL from a previous ad-hoc binary — delete and recreate.
             if updateStatus == errSecAuthFailed || updateStatus == errSecInteractionNotAllowed {
-                _ = SecItemDelete(updateQuery as CFDictionary)
+                try deleteKeychainItem(account: scope.rawValue, context: "lease update rotate")
             } else {
                 throw Error.storageFailed("lease keychain update failed (\(updateStatus))")
             }
@@ -147,8 +190,8 @@ enum RemoteCommandUserAuthorization {
         var addQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: RemoteCommandAuth.keychainService,
-            kSecAttrAccount as String: keychainAccount,
-            kSecAttrLabel as String: "Caff remote CLI signing lease",
+            kSecAttrAccount as String: scope.rawValue,
+            kSecAttrLabel as String: "Caff remote CLI signing lease (\(scope.rawValue))",
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
             kSecAttrAccess as String: access,
             kSecValueData as String: data,
@@ -167,6 +210,17 @@ enum RemoteCommandUserAuthorization {
         }
         guard status == errSecSuccess else {
             throw Error.storageFailed("lease keychain write failed (\(status))")
+        }
+    }
+
+    private static func deleteKeychainItem(account: String, context: String) throws {
+        let status = SecItemDelete([
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: RemoteCommandAuth.keychainService,
+            kSecAttrAccount as String: account,
+        ] as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw Error.storageFailed("\(context) delete failed (\(status))")
         }
     }
 }

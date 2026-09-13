@@ -5,6 +5,7 @@ extension AppDelegate {
     @objc func installAgentHooks() {
         do {
             try RemoteCommandUserAuthorization.authorize(
+                scope: .agentTouch,
                 reason: "Authorize Caff agent-touch hooks to sign remote commands",
                 leaseSeconds: RemoteCommandUserAuthorization.hookLeaseSeconds
             )

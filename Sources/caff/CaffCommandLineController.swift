@@ -47,21 +47,30 @@ final class CaffCommandLineController {
         switch command {
         case "start":
             let options = try parseStartOptions(rest)
-            try authorizeRemoteSigning(reason: "Authorize Caff to start a wake session")
+            try authorizeRemoteSigning(
+                scope: .signing,
+                reason: "Authorize Caff to start a wake session"
+            )
             try ensureAppRunning()
             try RemoteCommandBridge.post(options)
             Thread.sleep(forTimeInterval: 0.35)
             print("start command sent")
         case "stop":
             try rejectUnexpectedOptions(rest)
-            try authorizeRemoteSigning(reason: "Authorize Caff to stop the wake session")
+            try authorizeRemoteSigning(
+                scope: .signing,
+                reason: "Authorize Caff to stop the wake session"
+            )
             try ensureAppRunning()
             try RemoteCommandBridge.post([RemoteCommandBridge.Key.action: "stop"])
             Thread.sleep(forTimeInterval: 0.35)
             print("stop command sent")
         case "agent-touch":
             let options = try parseAgentTouchOptions(rest)
-            try authorizeRemoteSigning(reason: "Authorize Caff to refresh agent activity")
+            try authorizeRemoteSigning(
+                scope: .agentTouch,
+                reason: "Authorize Caff to refresh agent activity"
+            )
             try ensureAppRunning()
             try RemoteCommandBridge.post(options)
             Thread.sleep(forTimeInterval: 0.35)
@@ -69,22 +78,31 @@ final class CaffCommandLineController {
         case "authorize-remote":
             try rejectUnexpectedOptions(rest)
             try RemoteCommandUserAuthorization.authorize(
+                scope: .signing,
                 reason: "Authorize Caff remote-control CLI signing for this Mac",
                 leaseSeconds: RemoteCommandUserAuthorization.defaultLeaseSeconds
             )
             print("remote-control signing authorized")
         case "remote-token":
             try rejectUnexpectedOptions(rest)
-            try RemoteCommandUserAuthorization.ensureAuthorized(
-                reason: "Authorize Caff to reveal the remote-control install token"
-            )
+            // Token disclosure must not ride an install-hooks / signing lease — require
+            // fresh user presence so a temporary signing grant cannot become a durable
+            // reusable secret exfiltration path.
+            do {
+                try RemoteCommandUserAuthorization.requireFreshAuthorization(
+                    reason: "Authorize Caff to reveal the remote-control install token"
+                )
+            } catch let error as RemoteCommandUserAuthorization.Error {
+                throw CaffCommandLineError.authorizationRequired(error.description)
+            }
             let token = try RemoteCommandAuth().loadOrCreateToken()
             print(token)
         case "install-hooks":
             let options = try parseHookOptions(rest, allowCooldown: true)
-            // Explicit user action: mint a longer lease so subsequent agent-touch hooks
-            // can sign without turning every agent event into an auth prompt.
+            // Explicit user action: mint a longer agent-touch-only lease so hooks can
+            // sign without prompting, without also authorizing start/stop.
             try RemoteCommandUserAuthorization.authorize(
+                scope: .agentTouch,
                 reason: "Authorize Caff agent-touch hooks to sign remote commands",
                 leaseSeconds: RemoteCommandUserAuthorization.hookLeaseSeconds
             )
@@ -104,9 +122,12 @@ final class CaffCommandLineController {
         }
     }
 
-    private func authorizeRemoteSigning(reason: String) throws {
+    private func authorizeRemoteSigning(
+        scope: RemoteCommandUserAuthorization.Scope,
+        reason: String
+    ) throws {
         do {
-            try RemoteCommandUserAuthorization.ensureAuthorized(reason: reason)
+            try RemoteCommandUserAuthorization.ensureAuthorized(scope: scope, reason: reason)
         } catch let error as RemoteCommandUserAuthorization.Error {
             throw CaffCommandLineError.authorizationRequired(error.description)
         }
