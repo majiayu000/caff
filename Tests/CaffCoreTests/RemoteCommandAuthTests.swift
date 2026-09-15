@@ -1,4 +1,4 @@
-import CaffCore
+@testable import CaffCore
 import Foundation
 import Testing
 
@@ -354,4 +354,15 @@ private func temporaryAuthDirectory() throws -> URL {
     // already-consumed nonce — the failure mode when remint wiped to an empty map.
     #expect(try store.consume("nonce-1", expiresAt: expiresAt, now: now, integrityKey: newKey) == false)
     #expect(try store.consume("nonce-2", expiresAt: expiresAt, now: now, integrityKey: newKey))
+}
+
+@Test func retiredTokenRecordPreservesProvisionedTokenColon() {
+    let token = RemoteCommandAuth.provisionedTokenPrefix + String(repeating: "a", count: 64)
+    let entry = RemoteCommandAuth.parseRetiredTokenEntry("1700000120:\(token):abcd")
+    #expect(entry?.expiresAt == 1_700_000_120)
+    #expect(entry?.token == token)
+    #expect(entry?.mac == "abcd")
+    #expect(RemoteCommandAuth.parseRetiredTokenEntry("1700000120:caff-v1:abcd") == nil)
+    #expect(RemoteCommandAuth.parseRetiredTokenEntry("bad:\(token):abcd") == nil)
+    #expect(RemoteCommandAuth.parseRetiredTokenEntry("1700000120:\(token):") == nil)
 }

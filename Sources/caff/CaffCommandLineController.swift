@@ -104,10 +104,10 @@ final class CaffCommandLineController {
             // Issue a short-lived single-use URL ticket bound to the intended
             // command — never print the durable install secret (custom URL
             // schemes are not an exclusive channel). Fresh user presence is
-            // required; signing/hook leases must not mint tickets. Start and
-            // provision the receiver first so its lease-validated remint finishes
-            // before we mint; then rebind under that presence and sign the ticket
-            // against the post-remint secret the receiver will peek.
+            // required; signing/hook leases must not mint tickets. Publish the
+            // provisioning lease before launch so the receiver can start without
+            // a second prompt. Wait for readiness, then load the receiver's final
+            // key when issuing the ticket.
             do {
                 try RemoteCommandUserAuthorization.requireFreshAuthorization(
                     reason: "Authorize Caff to issue a remote-control URL ticket"
@@ -115,9 +115,9 @@ final class CaffCommandLineController {
             } catch let error as RemoteCommandUserAuthorization.Error {
                 throw CaffCommandLineError.authorizationRequired(error.description)
             }
-            try ensureAppRunning()
             _ = try RemoteCommandAuth().loadOrCreateToken()
             RemoteCommandUserAuthorization.recordProvisioningLeaseIfNeeded()
+            try ensureAppRunning()
             // Post retry only after the signing lease exists so a deferred app
             // receiver that requires hasAnyValidLease() can register handlers.
             RemoteCommandBridge.postRetryProvision()

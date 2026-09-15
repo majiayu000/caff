@@ -1249,14 +1249,9 @@ public struct RemoteCommandAuth: Sendable {
             return .remint(preserveInFlightSignatures: true)
         }
 
-        // Peer reminted under a lease this process already validated for a prior
-        // secret: the live claim matches the replacement. Adopt it instead of
-        // re-entering LocalAuthentication or rotating again.
-        if !Self.leaseValidatedTokenSnapshot().isEmpty,
-           let existingClaim = try readSlotClaimValue(claimAccount: claimAccount),
-           Self.constantTimeEquals(existingClaim, expected) {
-            return .adopt
-        }
+        // A validated lease for a different token cannot authenticate this
+        // replacement: a same-UID peer can plant both token and matching claim.
+        // Require fresh attestation and remint instead of adopting that material.
 
         if Self.slotClaimAttestationHandler == nil {
             try deleteKeychainAccount(claimAccount, context: "preplant claim rotate without attestation")
@@ -1982,6 +1977,18 @@ public struct RemoteCommandAuth: Sendable {
         return live.map(\.token)
     }
 
+    /// Decode the outer fields; provisioned tokens themselves contain a colon.
+    static func parseRetiredTokenEntry(_ line: String) -> (expiresAt: Int, token: String, mac: String)? {
+        guard let first = line.firstIndex(of: ":"),
+              let last = line.lastIndex(of: ":"), first != last,
+              let expiresAt = Int(line[..<first])
+        else { return nil }
+        let token = String(line[line.index(after: first)..<last])
+        let mac = String(line[line.index(after: last)...])
+        guard isProvisionedToken(token), !mac.isEmpty else { return nil }
+        return (expiresAt, token, mac)
+    }
+
     private func loadRetiredTokenEntries(
         forSlot slotAccount: String,
         bindingKey: String
@@ -1993,16 +2000,10 @@ public struct RemoteCommandAuth: Sendable {
         if raw.hasPrefix("v3\n") {
             var entries: [(expiresAt: Int, token: String)] = []
             for line in raw.dropFirst(3).split(separator: "\n", omittingEmptySubsequences: true) {
-                let body = String(line)
-                let parts = body.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
-                guard parts.count == 3,
-                      let expiresAt = Int(parts[0]),
-                      Self.isProvisionedToken(String(parts[1]))
-                else {
+                guard let entry = Self.parseRetiredTokenEntry(String(line)) else {
                     continue
                 }
-                let token = String(parts[1])
-                let mac = String(parts[2])
+                let (expiresAt, token, mac) = entry
                 let expected = Self.hmacHex(
                     key: bindingKey,
                     message: Self.retiredTokenMacMessage(expiresAt: expiresAt, token: token)
