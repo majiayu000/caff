@@ -57,6 +57,8 @@ import Testing
     let removedCodexHooks = try #require(removedCodexConfig["hooks"] as? [String: Any])
     #expect(commands(in: removedCodexHooks["Stop"]).contains("echo keep-me"))
     #expect(!commands(in: removedCodexHooks["Stop"]).contains { $0.contains("agent-touch") })
+    #expect(try manager.hasManagedHooks(targets: [.codex]) == false)
+    #expect(try manager.hasManagedHooks(targets: [.claude]) == true)
 
     let claudeURL = home.appendingPathComponent(".claude/settings.json")
     let claudeConfig = try readJSON(claudeURL)
@@ -64,6 +66,50 @@ import Testing
     #expect(claudeHooks["SessionStart"] == nil)
     let claudePromptEntries = try #require(claudeHooks["UserPromptSubmit"] as? [[String: Any]])
     #expect(claudePromptEntries.first?["matcher"] as? String == "*")
+
+    _ = try manager.remove(targets: [.claude])
+    #expect(try manager.hasManagedHooks() == false)
+}
+
+@Test func agentHookManagerDetectsHooksWhenSiblingConfigIsUnreadable() throws {
+    let home = FileManager.default.temporaryDirectory
+        .appendingPathComponent("caff-hook-partial-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: home) }
+
+    let manager = AgentHookManager(
+        homeDirectory: home,
+        executablePath: "/Applications/Caff.app/Contents/MacOS/Caff",
+        cooldownSeconds: 60
+    )
+    _ = try manager.install(targets: [.claude])
+
+    let codexURL = home.appendingPathComponent(".codex/hooks.json")
+    try FileManager.default.createDirectory(at: codexURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("not-json".utf8).write(to: codexURL)
+
+    #expect(try manager.hasManagedHooks() == true)
+    #expect(try manager.hasManagedHooks(targets: [.claude]) == true)
+}
+
+@Test func agentHookManagerTreatsPartialUnreadableScanWithoutHooksAsInconclusive() throws {
+    let home = FileManager.default.temporaryDirectory
+        .appendingPathComponent("caff-hook-inconclusive-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: home) }
+
+    let manager = AgentHookManager(
+        homeDirectory: home,
+        executablePath: "/Applications/Caff.app/Contents/MacOS/Caff",
+        cooldownSeconds: 60
+    )
+
+    // Claude absent → empty readable config. Codex unreadable → must not report "no hooks".
+    let codexURL = home.appendingPathComponent(".codex/hooks.json")
+    try FileManager.default.createDirectory(at: codexURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("not-json".utf8).write(to: codexURL)
+
+    #expect(throws: AgentHookManagerError.self) {
+        _ = try manager.hasManagedHooks()
+    }
 }
 
 private func readJSON(_ url: URL) throws -> [String: Any] {

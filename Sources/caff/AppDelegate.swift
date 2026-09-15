@@ -53,6 +53,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// When true, `showError` skips `NSAlert.runModal` (remote/IPC failure path).
     var presentsErrorsRemotely = false
     var remoteErrorPresentation = RemoteErrorPresentation()
+    /// True after DNC + URL remote-command handlers are installed.
+    var remoteControlHandlersRegistered = false
+    /// True after the quiet retry-provision observer is installed.
+    var remoteControlRetryObserverRegistered = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)

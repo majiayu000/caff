@@ -11,11 +11,12 @@ enum CaffCommandLineError: Error, CustomStringConvertible {
     case cannotStartApp
     case statusUnavailable
     case invalidHookTarget(String)
+    case authorizationRequired(String)
 
     var description: String {
         switch self {
         case .missingCommand:
-            return "Missing command. Use: caff start|stop|status|agent-touch|install-hooks|remove-hooks"
+            return "Missing command. Use: caff start|stop|status|agent-touch|install-hooks|remove-hooks|authorize-remote|remote-token"
         case let .missingValue(option):
             return "Missing value for \(option)"
         case let .unknownCommand(command):
@@ -28,6 +29,8 @@ enum CaffCommandLineError: Error, CustomStringConvertible {
             return "Caff status is unavailable"
         case let .invalidHookTarget(value):
             return "Invalid hook target: \(value). Use codex, claude, or all"
+        case let .authorizationRequired(message):
+            return message
         }
     }
 }
@@ -36,6 +39,8 @@ final class CaffCommandLineController {
     private let statusStore = CaffStatusStore()
 
     func run(arguments: [String]) throws {
+        RemoteCommandUserAuthorization.installSlotClaimAttestationHandler()
+        RemoteCommandUserAuthorization.noteValidLeasesIfPresent()
         guard let command = arguments.first else {
             throw CaffCommandLineError.missingCommand
         }
@@ -44,30 +49,121 @@ final class CaffCommandLineController {
         switch command {
         case "start":
             let options = try parseStartOptions(rest)
+            try authorizeRemoteSigning(
+                scope: .signing,
+                reason: "Authorize Caff to start a wake session"
+            )
             try ensureAppRunning()
-            RemoteCommandBridge.post(options)
+            // Wake a deferred receiver that skipped launch-time registration before
+            // posting the signed command (authorize-remote / install-hooks already do).
+            RemoteCommandBridge.postRetryProvision()
+            try RemoteCommandBridge.post(options)
             Thread.sleep(forTimeInterval: 0.35)
             print("start command sent")
         case "stop":
             try rejectUnexpectedOptions(rest)
+            try authorizeRemoteSigning(
+                scope: .signing,
+                reason: "Authorize Caff to stop the wake session"
+            )
             try ensureAppRunning()
-            RemoteCommandBridge.post([RemoteCommandBridge.Key.action: "stop"])
+            RemoteCommandBridge.postRetryProvision()
+            try RemoteCommandBridge.post([RemoteCommandBridge.Key.action: "stop"])
             Thread.sleep(forTimeInterval: 0.35)
             print("stop command sent")
         case "agent-touch":
             let options = try parseAgentTouchOptions(rest)
+            try authorizeRemoteSigning(
+                scope: .agentTouch,
+                reason: "Authorize Caff to refresh agent activity"
+            )
             try ensureAppRunning()
-            RemoteCommandBridge.post(options)
+            RemoteCommandBridge.postRetryProvision()
+            try RemoteCommandBridge.post(options)
             Thread.sleep(forTimeInterval: 0.35)
             print("agent touch sent")
+        case "authorize-remote":
+            try rejectUnexpectedOptions(rest)
+            try RemoteCommandUserAuthorization.authorize(
+                scope: .signing,
+                reason: "Authorize Caff remote-control CLI signing for this Mac",
+                leaseSeconds: RemoteCommandUserAuthorization.defaultLeaseSeconds
+            )
+            // Wake/notify a live app so a prior cancelled launch-time provision can
+            // register DNC/URL handlers now that a trusted lease exists. Do not fail
+            // authorization if the GUI cannot start; the next app launch still remints.
+            do {
+                try ensureAppRunning()
+            } catch {
+                fputs("Caff could not start the app after authorize-remote: \(error)\n", stderr)
+            }
+            RemoteCommandBridge.postRetryProvision()
+            print("remote-control signing authorized")
+        case "remote-token":
+            let binding = try parseRemoteTokenBinding(rest)
+            // Issue a short-lived single-use URL ticket bound to the intended
+            // command — never print the durable install secret (custom URL
+            // schemes are not an exclusive channel). Fresh user presence is
+            // required; signing/hook leases must not mint tickets. Publish the
+            // provisioning lease before launch so the receiver can start without
+            // a second prompt. Wait for readiness, then load the receiver's final
+            // key when issuing the ticket.
+            do {
+                try RemoteCommandUserAuthorization.requireFreshAuthorization(
+                    reason: "Authorize Caff to issue a remote-control URL ticket"
+                )
+            } catch let error as RemoteCommandUserAuthorization.Error {
+                throw CaffCommandLineError.authorizationRequired(error.description)
+            }
+            _ = try RemoteCommandAuth().loadOrCreateToken()
+            RemoteCommandUserAuthorization.recordProvisioningLeaseIfNeeded()
+            try ensureAppRunning()
+            // Post retry only after the signing lease exists so a deferred app
+            // receiver that requires hasAnyValidLease() can register handlers.
+            RemoteCommandBridge.postRetryProvision()
+            let ticket = try RemoteCommandAuth().issueURLTicket(binding: binding)
+            print(ticket)
         case "install-hooks":
             let options = try parseHookOptions(rest, allowCooldown: true)
-            let changes = try hookManager(cooldownSeconds: options.cooldownSeconds).install(targets: options.targets)
-            printHookChanges(changes)
+            // Explicit user action: mint a longer agent-touch-only lease so hooks can
+            // sign without prompting, without also authorizing start/stop.
+            try RemoteCommandUserAuthorization.authorize(
+                scope: .agentTouch,
+                reason: "Authorize Caff agent-touch hooks to sign remote commands",
+                leaseSeconds: RemoteCommandUserAuthorization.hookLeaseSeconds
+            )
+            do {
+                try ensureAppRunning()
+            } catch {
+                fputs("Caff could not start the app after install-hooks: \(error)\n", stderr)
+            }
+            RemoteCommandBridge.postRetryProvision()
+            let manager = hookManager(cooldownSeconds: options.cooldownSeconds)
+            do {
+                let changes = try manager.install(targets: options.targets)
+                printHookChanges(changes)
+            } catch {
+                // Partial installs are not atomic across targets. Only revoke the
+                // agent-touch lease when a conclusive scan finds no managed hooks;
+                // an inconclusive scan must preserve the lease for surviving hooks.
+                try? revokeAgentTouchLeaseIfNoManagedHooksRemain(manager)
+                throw error
+            }
         case "remove-hooks":
             let options = try parseHookOptions(rest, allowCooldown: false)
-            let changes = try hookManager(cooldownSeconds: options.cooldownSeconds).remove(targets: options.targets)
-            printHookChanges(changes)
+            let manager = hookManager(cooldownSeconds: options.cooldownSeconds)
+            do {
+                let changes = try manager.remove(targets: options.targets)
+                printHookChanges(changes)
+            } catch {
+                // Best-effort remaining-hook check on partial removal failures too.
+                try? revokeAgentTouchLeaseIfNoManagedHooksRemain(manager)
+                throw error
+            }
+            // When no managed hooks remain, drop the agent-touch lease so peers cannot
+            // keep signing agent-touch without user presence. Propagate revocation
+            // failures — a silent Keychain miss would leave a usable 30-day lease.
+            try revokeAgentTouchLeaseIfNoManagedHooksRemain(manager)
         case "status":
             try rejectUnexpectedOptions(rest)
             try ensureAppRunning()
@@ -75,6 +171,32 @@ final class CaffCommandLineController {
             try printStatus()
         default:
             throw CaffCommandLineError.unknownCommand(command)
+        }
+    }
+
+    private func authorizeRemoteSigning(
+        scope: RemoteCommandUserAuthorization.Scope,
+        reason: String
+    ) throws {
+        do {
+            try RemoteCommandUserAuthorization.ensureAuthorized(scope: scope, reason: reason)
+        } catch let error as RemoteCommandUserAuthorization.Error {
+            throw CaffCommandLineError.authorizationRequired(error.description)
+        }
+    }
+
+    /// Revokes the agent-touch lease only when a conclusive scan finds no managed hooks.
+    /// Inconclusive scans preserve the lease; Keychain revoke failures are propagated.
+    private func revokeAgentTouchLeaseIfNoManagedHooksRemain(_ manager: AgentHookManager) throws {
+        let hasHooks: Bool
+        do {
+            hasHooks = try manager.hasManagedHooks()
+        } catch {
+            // Inconclusive — keep the lease so surviving hooks are not disabled.
+            return
+        }
+        if !hasHooks {
+            try RemoteCommandUserAuthorization.revokeLease(scope: .agentTouch)
         }
     }
 
@@ -102,6 +224,33 @@ final class CaffCommandLineController {
         return result
     }
 
+    /// Parses `remote-token <action> [options]` into the command fields bound into the ticket MAC.
+    private func parseRemoteTokenBinding(_ arguments: [String]) throws -> [String: String] {
+        guard let action = arguments.first else {
+            throw CaffCommandLineError.missingValue("remote-token action (start|stop|agent-touch)")
+        }
+        let rest = Array(arguments.dropFirst())
+        switch action {
+        case "start":
+            var options = try parseStartOptions(rest)
+            // URL opens default source to `url` before auth; bind the same default.
+            if options[RemoteCommandBridge.Key.source] == nil {
+                options[RemoteCommandBridge.Key.source] = SessionSource.url.rawValue
+            }
+            return options
+        case "stop":
+            try rejectUnexpectedOptions(rest)
+            // URL opens do not inject source for stop (only start defaults to `url`).
+            // Keep the binding source-free so it matches `caff://stop` authentication.
+            return [RemoteCommandBridge.Key.action: "stop"]
+        case "agent-touch":
+            // URL opens do not inject `source` for agent-touch; bind only caller fields.
+            return try parseAgentTouchOptions(rest)
+        default:
+            throw CaffCommandLineError.unknownCommand("remote-token \(action)")
+        }
+    }
+
     private func parseAgentTouchOptions(_ arguments: [String]) throws -> [String: String] {
         var result = [RemoteCommandBridge.Key.action: "agent-touch"]
         var index = 0
@@ -109,7 +258,9 @@ final class CaffCommandLineController {
             let option = arguments[index]
             switch option {
             case "--source":
-                result[RemoteCommandBridge.Key.agentSource] = try value(after: option, in: arguments, index: &index)
+                // Bind the same URL query key (`source`) so remote-token tickets MAC-match
+                // `caff://agent-touch?source=...` (not the DNC-only `agentSource` alias).
+                result[RemoteCommandBridge.Key.source] = try value(after: option, in: arguments, index: &index)
             case "--cooldown-seconds":
                 result[RemoteCommandBridge.Key.cooldownSeconds] = try value(after: option, in: arguments, index: &index)
             default:

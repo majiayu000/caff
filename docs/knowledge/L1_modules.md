@@ -1,6 +1,6 @@
 # L1 — 模块契约
 
-> 来源:`Sources/CaffCore/` 10 个文件(Phase 5 之后,新增 `IOPowerAssertionBackend.swift`)。本文件逐模块抽取公开接口、关键不变量、失败模式。
+> 来源:`Sources/CaffCore/` 12 个文件(Phase 5 之后,新增 `IOPowerAssertionBackend.swift`、`RemoteErrorPresentation.swift` 与 `RemoteCommandAuth.swift`)。本文件逐模块抽取公开接口、关键不变量、失败模式。
 
 ---
 
@@ -268,3 +268,53 @@
 | +4.999s | false | 否 |
 | +5s (== interval) | true | 是 |
 | +10s | true | 是 |
+
+---
+
+## 11. `RemoteCommandAuth` / `RemoteCommandAuthError`
+
+**公开 API**:
+- `enum RemoteCommandAuthError`: `.missingToken` / `.invalidToken` / `.storageFailed(String)`
+- `struct RemoteCommandAuth`
+  - `static let tokenFileName` / `nonceFileName` / `tokenByteCount` / `signatureMaxAgeSeconds`
+  - `static let keychainService` / `keychainAccount` / `keychainNonceAccount`
+  - `enum PayloadKey`: `token` / `ticket` / `mac` / `nonce` / `timestamp`
+  - `init(directoryURL:now:)`
+  - `var tokenFileURL: URL` / `nonceFileURL: URL`
+  - `func loadOrCreateToken() throws -> String`
+  - `func isValid(_:) -> Bool`
+  - `func verify(_:) throws`
+  - `func authenticate(_:) throws`
+  - `func sign(_:) throws -> [String: String]`
+  - `func verifySignedPayload(_:) throws`
+  - `func issueURLTicket(binding:) throws -> String`
+  - `func verifyURLTicket(_:boundTo:) throws`
+
+**不变量**:
+- 生产路径(默认 `directoryURL`)把安装级共享密钥与已接受 nonce 映射存入 login Keychain(`service=local.caff.remote-command`, private slot accounts),ACL 限定当前可执行文件;不把同 UID 可写的遗留 Application Support token 迁入 Keychain(删除后重新生成)
+- 显式 `directoryURL`(测试)仍用 Application Support 风格文件:`remote-command.token`,权限 `0o600`,`O_EXCL`+`link` 原子发布
+- 测试路径的 `remote-command.nonces` 用安装 token HMAC 绑定内容;篡改/截断失败闭合。生产路径 nonce 在 Keychain,同 UID 进程无法通过删文件重置重放状态
+- Keychain 首次写入只 `SecItemAdd`,从不 delete-then-add;遇 `errSecDuplicateItem` 时重新读取胜者
+- DNC 路径通过 `sign`/`authenticate` 只携带短时 HMAC(`mac`/`nonce`/`ts`),**从不广播**可复用 bearer token
+- URL 路径只接受短时单次 `ticket=`(由 `issueURLTicket(binding:)` / `caff remote-token` 签发,MAC 绑定 action/参数);生产 Keychain 模式拒绝 `token=` 直传 durable secret。缺失/错误凭证与 `.storageFailed` 必须区分处理
+- 签名时间窗默认 120 秒;过期或 MAC 不匹配 → `.invalidToken`
+
+**失败模式**:
+- `.missingToken` — 未提供 `ticket`/`mac`(生产)或 `token`/`mac`(测试文件模式)
+- `.invalidToken` — 错凭证、坏 MAC、缺 nonce/ts、签名过期、nonce/ticket 重放、ticket 与命令字段不一致
+- `.storageFailed` — Keychain/文件读写权限/IO/随机数失败(应走正常错误通道,不可静默当伪造 IPC)
+
+**等价类**:
+| 场景 | 期望 |
+|---|---|
+| 首次 loadOrCreate | 生成 64-hex token 并写入 Keychain(生产)或文件(测试) |
+| 再次 loadOrCreate | 返回同一 token |
+| verify(nil/"") | `.missingToken` |
+| verify(wrong) | `.invalidToken` |
+| verify(matching) | 通过 |
+| sign → authenticate | 通过且 payload 无 `token` |
+| issueURLTicket → authenticate(ticket=) | 通过;重放或改 action → `.invalidToken` |
+| 生产 authenticate(token= only) | `.missingToken` |
+| 过期 ts / 坏 mac / 重放 nonce | `.invalidToken` |
+| 重启后重放同一 nonce | `.invalidToken` |
+| 并发首次创建 | 双方最终读到同一胜者 token |

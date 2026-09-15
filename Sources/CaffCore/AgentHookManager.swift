@@ -85,6 +85,51 @@ public struct AgentHookManager {
         try targets.map { try update(target: $0, operation: .remove) }
     }
 
+    /// Returns true when any managed Caff `agent-touch` hooks remain for `targets`.
+    ///
+    /// Each target is inspected independently: a malformed/unreadable config for one
+    /// agent does not prevent detecting managed hooks on another. When any target
+    /// fails to read and no managed hook was found on readable targets, the last
+    /// error is thrown so callers treat the scan as inconclusive (an uninspected
+    /// target may still contain a surviving hook) instead of “no hooks.”
+    public func hasManagedHooks(targets: [AgentHookTarget] = AgentHookTarget.allCases) throws -> Bool {
+        var lastError: Error?
+        for target in targets {
+            let root: [String: Any]
+            do {
+                root = try readConfig(at: configURL(for: target))
+            } catch {
+                lastError = error
+                continue
+            }
+            guard let hooksByEvent = root["hooks"] as? [String: Any] else {
+                continue
+            }
+            for eventName in target.eventNames {
+                guard let entries = hooksByEvent[eventName] as? [[String: Any]] else {
+                    continue
+                }
+                for entry in entries {
+                    guard let hooks = entry["hooks"] as? [[String: Any]] else {
+                        continue
+                    }
+                    if hooks.contains(where: { hook in
+                        guard let command = hook["command"] as? String else {
+                            return false
+                        }
+                        return isCaffHookCommand(command, target: target)
+                    }) {
+                        return true
+                    }
+                }
+            }
+        }
+        if let lastError {
+            throw lastError
+        }
+        return false
+    }
+
     public func configURL(for target: AgentHookTarget) -> URL {
         homeDirectory.appendingPathComponent(target.relativeConfigPath)
     }

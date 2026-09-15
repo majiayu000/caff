@@ -269,6 +269,194 @@ check(
 )
 
 do {
+    let authDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("caff-core-checks-auth-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: authDirectory) }
+    let auth = RemoteCommandAuth(directoryURL: authDirectory)
+    let token = try auth.loadOrCreateToken()
+    try auth.verify(token)
+    check(auth.isValid(token), "matching remote token should verify")
+    check(!auth.isValid(nil), "missing remote token should fail")
+    check(!auth.isValid("wrong-token"), "wrong remote token should fail")
+    do {
+        try auth.verify(nil)
+        failures.append("remote auth should reject missing token")
+    } catch let error as RemoteCommandAuthError {
+        check(error == .missingToken, "remote auth should report missing token")
+    }
+    do {
+        try auth.verify("wrong-token")
+        failures.append("remote auth should reject wrong token")
+    } catch let error as RemoteCommandAuthError {
+        check(error == .invalidToken, "remote auth should report invalid token")
+    }
+    let signed = try auth.sign([
+        "action": "stop",
+        RemoteCommandAuth.PayloadKey.token: "must-not-broadcast",
+    ])
+    check(signed[RemoteCommandAuth.PayloadKey.token] == nil, "signed payload must omit reusable token")
+    check(signed[RemoteCommandAuth.PayloadKey.mac]?.isEmpty == false, "signed payload must include mac")
+    try auth.authenticate(signed)
+    do {
+        try auth.verifySignedPayload(signed)
+        failures.append("remote auth should reject replayed nonce")
+    } catch let error as RemoteCommandAuthError {
+        check(error == .invalidToken, "remote auth should report replayed nonce")
+    }
+    check(
+        FileManager.default.fileExists(atPath: auth.nonceFileURL.path),
+        "accepted nonces should be persisted for restart-safe replay rejection"
+    )
+    let restartedAuth = RemoteCommandAuth(directoryURL: authDirectory)
+    do {
+        try restartedAuth.verifySignedPayload(signed)
+        failures.append("remote auth should reject replayed nonce after restart")
+    } catch let error as RemoteCommandAuthError {
+        check(error == .invalidToken, "remote auth should report replayed nonce after restart")
+    }
+    let forgedNonceCache = try JSONSerialization.data(
+        withJSONObject: ["nonces": [:] as [String: Any], "mac": "deadbeef"],
+        options: [.sortedKeys]
+    )
+    try forgedNonceCache.write(to: auth.nonceFileURL, options: .atomic)
+    do {
+        try auth.verifySignedPayload(signed)
+        failures.append("remote auth should fail closed on tampered nonce cache")
+    } catch let error as RemoteCommandAuthError {
+        if case .storageFailed = error {
+            // expected
+        } else {
+            failures.append("remote auth should report storageFailed for tampered nonce cache")
+        }
+    }
+    var tampered = signed
+    tampered["action"] = "start"
+    do {
+        try auth.verifySignedPayload(tampered)
+        failures.append("remote auth should reject tampered mac payload")
+    } catch let error as RemoteCommandAuthError {
+        check(error == .invalidToken, "remote auth should report invalid mac")
+    }
+
+    // Fresh directory: the previous case intentionally left a forged nonce cache on disk.
+    let injectionDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("caff-core-checks-auth-inject-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: injectionDirectory) }
+    let injectionAuth = RemoteCommandAuth(directoryURL: injectionDirectory)
+    let structured = try injectionAuth.sign([
+        "action": "start",
+        "displayAwake": "true",
+        "minutes": "30",
+    ])
+    try injectionAuth.authenticate(structured)
+    var colliding = structured
+    colliding["displayAwake"] = "true\nminutes=30"
+    colliding.removeValue(forKey: "minutes")
+    do {
+        try injectionAuth.verifySignedPayload(colliding)
+        failures.append("remote auth should reject newline field repartition")
+    } catch let error as RemoteCommandAuthError {
+        check(error == .invalidToken, "remote auth should reject newline field repartition")
+    }
+
+    let ticketDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("caff-core-checks-auth-ticket-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: ticketDirectory) }
+    let ticketAuth = RemoteCommandAuth(directoryURL: ticketDirectory)
+    let installToken = try ticketAuth.loadOrCreateToken()
+    let ticketCommand: [String: String] = [
+        "action": "start",
+        "minutes": "30",
+        "reason": "agent",
+        "source": "url",
+    ]
+    let ticket = try ticketAuth.issueURLTicket(binding: ticketCommand)
+    check(!ticket.contains(installToken), "URL ticket must not embed the install token")
+    var ticketPayload = ticketCommand
+    ticketPayload[RemoteCommandAuth.PayloadKey.ticket] = ticket
+    try ticketAuth.authenticate(ticketPayload)
+    do {
+        try ticketAuth.authenticate(ticketPayload)
+        failures.append("remote auth should reject replayed URL ticket")
+    } catch let error as RemoteCommandAuthError {
+        check(error == .invalidToken, "remote auth should report replayed URL ticket")
+    }
+    do {
+        try ticketAuth.authenticate([
+            "action": "stop",
+            RemoteCommandAuth.PayloadKey.ticket: ticket,
+        ])
+        failures.append("remote auth should reject URL ticket rebound to another action")
+    } catch let error as RemoteCommandAuthError {
+        check(error == .invalidToken, "remote auth should report rebound URL ticket")
+    }
+
+    let emptyTokenDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("caff-core-checks-auth-empty-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: emptyTokenDirectory) }
+    try FileManager.default.createDirectory(at: emptyTokenDirectory, withIntermediateDirectories: true)
+    let emptyAuth = RemoteCommandAuth(directoryURL: emptyTokenDirectory)
+    try Data().write(to: emptyAuth.tokenFileURL)
+    let recovered = try emptyAuth.loadOrCreateToken()
+    check(recovered.count == RemoteCommandAuth.tokenByteCount * 2, "empty token file should be recovered")
+
+    let preserveDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("caff-core-checks-auth-preserve-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: preserveDirectory) }
+    try FileManager.default.createDirectory(at: preserveDirectory, withIntermediateDirectories: true)
+    let preserveAuth = RemoteCommandAuth(directoryURL: preserveDirectory)
+    try Data().write(to: preserveAuth.tokenFileURL)
+    let published = String(repeating: "b", count: RemoteCommandAuth.tokenByteCount * 2)
+    try FileManager.default.removeItem(at: preserveAuth.tokenFileURL)
+    try published.data(using: .utf8)!.write(to: preserveAuth.tokenFileURL, options: .atomic)
+    let preserved = try preserveAuth.loadOrCreateToken()
+    check(preserved == published, "recovery must not delete a concurrently published complete token")
+
+    // Remint must rebind accepted nonces under the new integrity key. Wiping to an
+    // empty map while still accepting retired MACs would allow ~120s same-UID replay.
+    let migrateDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("caff-core-checks-auth-migrate-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: migrateDirectory) }
+    try FileManager.default.createDirectory(at: migrateDirectory, withIntermediateDirectories: true)
+    let nonceStore = AcceptedNonceStore(directoryURL: migrateDirectory, usesKeychain: false)
+    let oldKey = "old-install-secret"
+    let newKey = "new-install-secret"
+    let migrateNow: TimeInterval = 1_700_000_500
+    let migrateExpiry = migrateNow + RemoteCommandAuth.signatureMaxAgeSeconds
+    try nonceStore.provisionEmpty(integrityKey: oldKey)
+    let firstConsume = try nonceStore.consume(
+        "nonce-1",
+        expiresAt: migrateExpiry,
+        now: migrateNow,
+        integrityKey: oldKey
+    )
+    check(firstConsume, "first nonce consume under old key should succeed")
+    try nonceStore.withExclusiveAccess { access in
+        let migrated = try access.exportMap(integrityKey: oldKey)
+        try access.provisionMap(migrated, integrityKey: newKey, now: migrateNow)
+    }
+    let replayAfterMigrate = try nonceStore.consume(
+        "nonce-1",
+        expiresAt: migrateExpiry,
+        now: migrateNow,
+        integrityKey: newKey
+    )
+    check(
+        replayAfterMigrate == false,
+        "remint migration must preserve consumed nonces under the live integrity key"
+    )
+    let freshAfterMigrate = try nonceStore.consume(
+        "nonce-2",
+        expiresAt: migrateExpiry,
+        now: migrateNow,
+        integrityKey: newKey
+    )
+    check(freshAfterMigrate, "fresh nonces should still be accepted after remint migration")
+} catch {
+    failures.append("remote command auth checks failed: \(error)")
+}
+
+do {
     let controller = PowerAssertionController()
     try controller.start(options: SessionOptions(duration: .thirtyMinutes, keepDisplayAwake: true))
     check(controller.isRunning, "controller should report running after start")

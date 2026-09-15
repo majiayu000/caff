@@ -23,7 +23,8 @@ let package = Package(
             name: "caff",
             dependencies: ["CaffCore"],
             linkerSettings: [
-                .linkedFramework("AppKit")
+                .linkedFramework("AppKit"),
+                .linkedFramework("LocalAuthentication")
             ]
         ),
         .executableTarget(
