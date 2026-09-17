@@ -80,7 +80,7 @@ Source install requires macOS 13+ and Xcode Command Line Tools. To install somew
 CAFF_INSTALL_DIR="$HOME/Applications" ./scripts/install.sh
 ```
 
-For maintainers, `./scripts/package_release.sh` builds `dist/Caff-<version>.zip` and its `.sha256` file for GitHub Releases.
+For maintainers, `./scripts/package_release.sh` builds `dist/Caff-<version>.zip` and its `.sha256` file for GitHub Releases. Public macOS releases must use your own Developer ID Application identity and App Store Connect API key; ad-hoc zips are only for local testing.
 
 ## Quick Start
 
