@@ -1,8 +1,8 @@
 import Foundation
 
 enum RemoteCommandBridge {
-    static let bundleIdentifier = "local.caff"
-    static let notificationName = Notification.Name("local.caff.remote-command")
+    static let bundleIdentifier = "com.starlight.caff"
+    static let notificationName = Notification.Name("com.starlight.caff.remote-command")
 
     enum Key {
         static let action = "action"

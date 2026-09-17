@@ -4,6 +4,8 @@ All notable changes to Caff are documented here.
 
 ## Unreleased
 
+- Changed the app bundle identifier to `com.starlight.caff` so Developer ID signing and notarization can use a stable reverse-DNS id.
+- Tagged GitHub Release zips are Developer ID signed and notarized. Local and CI ad-hoc zips remain tester-only.
 - Remote DNC / `caff://` failures no longer call `NSAlert.runModal`; they update status, log to stderr, and emit rate-limited UserNotifications (`RemoteErrorPresentation`). Interactive menu and control-window errors still use modal alerts.
 - Fixed `SafetyPolicy` / `PowerSourceMonitor` to fail closed on empty or unknown power source: long and indefinite sessions now require confirmed AC when `allowLongSessionsOnBattery` is false.
 - Added README status badges for CI, tests, release, and license.

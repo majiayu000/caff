@@ -3,13 +3,15 @@ set -euo pipefail
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 app_name="Caff"
-bundle_id="local.caff"
+bundle_id="com.starlight.caff"
 build_dir="$root_dir/.build/release"
 dist_dir="$root_dir/dist"
 app_dir="$dist_dir/$app_name.app"
 resources_dir="$root_dir/Resources"
 iconset_dir="$resources_dir/AppIcon.iconset"
 icns_path="$resources_dir/Caff.icns"
+entitlements_path="$resources_dir/Caff.entitlements"
+identity="${CAFF_SIGNING_IDENTITY:-${APPLE_SIGNING_IDENTITY:--}}"
 
 swift build -c release --package-path "$root_dir"
 swift "$root_dir/scripts/render_app_icon.swift" "$resources_dir" >/dev/null
@@ -47,9 +49,9 @@ cat > "$app_dir/Contents/Info.plist" <<PLIST
         </dict>
     </array>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.4</string>
+    <string>0.1.5</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>2</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>NSPrincipalClass</key>
@@ -59,6 +61,33 @@ cat > "$app_dir/Contents/Info.plist" <<PLIST
 PLIST
 
 plutil -lint "$app_dir/Contents/Info.plist"
-codesign --force --deep --sign - "$app_dir"
+[[ -f "$entitlements_path" ]] || {
+    echo "missing entitlements: $entitlements_path" >&2
+    exit 1
+}
+
+if [[ "${CAFF_REQUIRE_DEVELOPER_ID:-}" == "1" ]]; then
+    if [[ "$identity" == "-" || "$identity" != Developer\ ID\ Application:* ]]; then
+        echo "CAFF_REQUIRE_DEVELOPER_ID=1 needs APPLE_SIGNING_IDENTITY to be a Developer ID Application identity" >&2
+        exit 1
+    fi
+fi
+
+codesign_args=(
+    --force
+    --sign "$identity"
+    --identifier "$bundle_id"
+    --options runtime
+    --entitlements "$entitlements_path"
+)
+if [[ "$identity" == "-" ]]; then
+    codesign_args+=(--timestamp=none)
+else
+    codesign_args+=(--timestamp)
+fi
+
+# Sign the executable first, then the bundle. --deep is not used for release signing.
+codesign "${codesign_args[@]}" "$app_dir/Contents/MacOS/$app_name"
+codesign "${codesign_args[@]}" "$app_dir"
 codesign --verify --deep --strict "$app_dir"
 echo "$app_dir"
