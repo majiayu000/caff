@@ -4,7 +4,7 @@ All notable changes to Caff are documented here.
 
 ## Unreleased
 
-- Remote `start`, `stop`, and `agent-touch` commands now require the per-install token in `~/Library/Application Support/Caff/remote-command.token`. The CLI attaches it. `caff://` URLs must pass it as `token`. A same-user process that can read the file can still send a command.
+- Remote `start`, `stop`, and `agent-touch` commands from the CLI now use an XPC channel accepted only for this Caff binary's designated code-signing requirement. `caff://` links and distributed notifications are ignored. Launch removes a leftover `remote-command.token` file. Running the Caff executable is still the supported same-user command path.
 - Changed the app bundle identifier to `com.starlight.caff` so Developer ID signing and notarization can use a stable reverse-DNS id.
 - Tagged GitHub Release zips are Developer ID signed and notarized. Local and CI ad-hoc zips remain tester-only.
 - Remote DNC / `caff://` failures no longer call `NSAlert.runModal`; they update status, log to stderr, and emit rate-limited UserNotifications (`RemoteErrorPresentation`). Interactive menu and control-window errors still use modal alerts.

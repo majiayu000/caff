@@ -52,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var notificationsEnabled = false
     /// When true, `showError` skips `NSAlert.runModal` (remote/IPC failure path).
     var presentsErrorsRemotely = false
+    var remoteCommandServer: RemoteCommandServer?
     var remoteErrorPresentation = RemoteErrorPresentation()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -69,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        remoteCommandServer?.stop()
         updateTimer?.invalidate()
         agentActivityTimer?.invalidate()
         if let activeSession {

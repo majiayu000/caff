@@ -268,34 +268,3 @@
 | +4.999s | false | 否 |
 | +5s (== interval) | true | 是 |
 | +10s | true | 是 |
-
----
-
-## 11. `RemoteCommandAuthenticator`
-
-**公开 API**:
-- `RemoteCommandTokenError.tokenUnavailable`
-- `RemoteCommandTokenError.invalidStoredToken`
-- `static let fileName` = `remote-command.token`
-- `static func defaultDirectory(fileManager:) -> URL`
-- `static func loadOrCreate() throws -> String`
-- `static func loadOrCreate(in:) throws -> String`
-- `static func accepts(presented:expected:) -> Bool`
-
-**不变量**:
-- `defaultDirectory` 指向 `~/Library/Application Support/Caff`；目录权限 `0700`，令牌文件权限 `0600`
-- 新建令牌是 32 字节随机数的 64 位小写十六进制；`link` 发布完整文件，读到的一方不会看到半截内容
-- 已存在的合法令牌原样复用，包括末尾空白；不在每次调用时轮换
-- 空文件、非 64 位小写十六进制、读失败抛 `invalidStoredToken`，不改写原文件
-- 目录不能创建或随机数不可用时抛 `tokenUnavailable`；两条错误描述都不包含令牌内容
-- `accepts` 对 nil、空串、长度不同、任一字节不同返回 false；比较走完整个等长输入
-- 同一用户若能读到令牌文件，仍可自己附上令牌。这个类型只拒绝没有正确令牌的 DNC 和 `caff://`
-
-**等价类**:
-| 条件 | 结果 |
-|---|---|
-| 目录里没有令牌文件 | `loadOrCreate` 创建 `0600` 文件并返回 64 位 hex，再次调用得到同一字符串 |
-| 文件是 64 位 hex 加换行，权限 `0644` | 返回去掉空白的令牌，权限收到 `0600` |
-| 文件内容是 `nope` | 抛 `invalidStoredToken`，文件仍是 `nope` |
-| presented 与 expected 全等 | `accepts` true |
-| presented 为 nil、`""`、少一位、或任一字不同 | `accepts` false |
