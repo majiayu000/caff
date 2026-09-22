@@ -16,15 +16,15 @@ let package = Package(
         .target(
             name: "CaffCore",
             linkerSettings: [
-                .linkedFramework("IOKit"),
-                .linkedFramework("Security")
+                .linkedFramework("IOKit")
             ]
         ),
         .executableTarget(
             name: "caff",
             dependencies: ["CaffCore"],
             linkerSettings: [
-                .linkedFramework("AppKit")
+                .linkedFramework("AppKit"),
+                .linkedFramework("Security")
             ]
         ),
         .executableTarget(

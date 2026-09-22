@@ -22,12 +22,13 @@ private enum RemoteCommandApplyError: Error, CustomStringConvertible {
 
 extension AppDelegate {
     func registerRemoteControlHandlers() {
-        DistributedNotificationCenter.default().addObserver(
-            self,
-            selector: #selector(handleRemoteCommandNotification(_:)),
-            name: RemoteCommandBridge.notificationName,
-            object: RemoteCommandBridge.bundleIdentifier
-        )
+        do {
+            remoteCommandServer = try RemoteCommandServer { [weak self] userInfo in
+                self?.acceptSignedRemoteCommand(userInfo) ?? false
+            }
+        } catch {
+            fputs("Caff remote command channel is unavailable: \(error)\n", stderr)
+        }
         NSAppleEventManager.shared().setEventHandler(
             self,
             andSelector: #selector(handleGetURLEvent(_:withReplyEvent:)),
@@ -36,57 +37,21 @@ extension AppDelegate {
         )
     }
 
-    @objc func handleRemoteCommandNotification(_ notification: Notification) {
-        let userInfo = (notification.userInfo as? [String: String]) ?? [:]
-        guard authorize(userInfo) else {
-            return
-        }
-        withRemoteErrorPresentation {
-            do {
-                try applyRemoteCommand(userInfo: userInfo)
-            } catch {
-                showError(error)
-            }
-        }
-    }
-
     @objc func handleGetURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent replyEvent: NSAppleEventDescriptor) {
+        fputs("Caff ignored a caff:// command. Use the Caff executable.\n", stderr)
+    }
+
+    func acceptSignedRemoteCommand(_ userInfo: [String: String]) -> Bool {
+        var accepted = false
         withRemoteErrorPresentation {
             do {
-                guard let urlString = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue,
-                      let url = URL(string: urlString),
-                      var userInfo = userInfo(from: url) else {
-                    throw RemoteCommandApplyError.invalidURL(event.description)
-                }
-                if userInfo[RemoteCommandBridge.Key.action] == "start",
-                   userInfo[RemoteCommandBridge.Key.source] == nil {
-                    userInfo[RemoteCommandBridge.Key.source] = SessionSource.url.rawValue
-                }
-                guard authorize(userInfo) else {
-                    return
-                }
                 try applyRemoteCommand(userInfo: userInfo)
+                accepted = true
             } catch {
                 showError(error)
             }
         }
-    }
-
-    private func authorize(_ userInfo: [String: String]) -> Bool {
-        do {
-            let expected = try RemoteCommandAuthenticator.loadOrCreate()
-            if RemoteCommandAuthenticator.accepts(
-                presented: userInfo[RemoteCommandBridge.Key.token],
-                expected: expected
-            ) {
-                return true
-            }
-        } catch {
-            fputs("Caff remote command token is unavailable.\n", stderr)
-            return false
-        }
-        fputs("Caff rejected a remote command with a missing or invalid token.\n", stderr)
-        return false
+        return accepted
     }
 
     private func applyRemoteCommand(userInfo: [String: String]) throws {
@@ -121,23 +86,5 @@ extension AppDelegate {
             userInfo[RemoteCommandBridge.Key.cooldownSeconds]
         )
         touchAgentActivity(source: source, cooldownSeconds: cooldownSeconds)
-    }
-
-    private func userInfo(from url: URL) -> [String: String]? {
-        guard url.scheme == "caff" else {
-            return nil
-        }
-        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-            return nil
-        }
-        let action = url.host?.isEmpty == false ? url.host! : url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard !action.isEmpty else {
-            return nil
-        }
-        var userInfo = [RemoteCommandBridge.Key.action: action]
-        for item in components.queryItems ?? [] {
-            userInfo[item.name] = item.value ?? ""
-        }
-        return userInfo
     }
 }

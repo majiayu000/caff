@@ -13,7 +13,7 @@ Caff 是一款 macOS 菜单栏小工具,职责单一:**让 Mac 在跑长任务�
 |---|---|---|
 | **Manual** | 菜单栏按钮(30 分钟 / 1 小时 / 4 小时) | 已知时长的任务 |
 | **Agent** | agent-touch CLI 配合 hook | 长跑 agent(Codex / Claude) |
-| **CLI / URL** | `caff start ...` / `caff://...` | 脚本与跨进程控制 |
+| **CLI** | `caff start ...` | 脚本与跨进程控制；只接受本二进制的 XPC |
 
 ## 模块全景(CaffCore)
 
