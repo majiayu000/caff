@@ -45,19 +45,19 @@ final class CaffCommandLineController {
         case "start":
             let options = try parseStartOptions(rest)
             try ensureAppRunning()
-            RemoteCommandBridge.post(options)
+            try RemoteCommandBridge.post(options)
             Thread.sleep(forTimeInterval: 0.35)
             print("start command sent")
         case "stop":
             try rejectUnexpectedOptions(rest)
             try ensureAppRunning()
-            RemoteCommandBridge.post([RemoteCommandBridge.Key.action: "stop"])
+            try RemoteCommandBridge.post([RemoteCommandBridge.Key.action: "stop"])
             Thread.sleep(forTimeInterval: 0.35)
             print("stop command sent")
         case "agent-touch":
             let options = try parseAgentTouchOptions(rest)
             try ensureAppRunning()
-            RemoteCommandBridge.post(options)
+            try RemoteCommandBridge.post(options)
             Thread.sleep(forTimeInterval: 0.35)
             print("agent touch sent")
         case "install-hooks":

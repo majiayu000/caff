@@ -1,3 +1,4 @@
+import CaffCore
 import Foundation
 
 enum RemoteCommandBridge {
@@ -12,13 +13,16 @@ enum RemoteCommandBridge {
         static let source = "source"
         static let agentSource = "agentSource"
         static let cooldownSeconds = "cooldownSeconds"
+        static let token = "token"
     }
 
-    static func post(_ userInfo: [String: String]) {
+    static func post(_ userInfo: [String: String]) throws {
+        var payload = userInfo
+        payload[Key.token] = try RemoteCommandAuthenticator.loadOrCreate()
         DistributedNotificationCenter.default().postNotificationName(
             notificationName,
             object: bundleIdentifier,
-            userInfo: userInfo,
+            userInfo: payload,
             deliverImmediately: true
         )
     }

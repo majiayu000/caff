@@ -1,6 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 import CaffCore
+import Darwin
 
 private enum RemoteCommandApplyError: Error, CustomStringConvertible {
     case invalidURL(String)
@@ -37,6 +38,9 @@ extension AppDelegate {
 
     @objc func handleRemoteCommandNotification(_ notification: Notification) {
         let userInfo = (notification.userInfo as? [String: String]) ?? [:]
+        guard authorize(userInfo) else {
+            return
+        }
         withRemoteErrorPresentation {
             do {
                 try applyRemoteCommand(userInfo: userInfo)
@@ -58,11 +62,31 @@ extension AppDelegate {
                    userInfo[RemoteCommandBridge.Key.source] == nil {
                     userInfo[RemoteCommandBridge.Key.source] = SessionSource.url.rawValue
                 }
+                guard authorize(userInfo) else {
+                    return
+                }
                 try applyRemoteCommand(userInfo: userInfo)
             } catch {
                 showError(error)
             }
         }
+    }
+
+    private func authorize(_ userInfo: [String: String]) -> Bool {
+        do {
+            let expected = try RemoteCommandAuthenticator.loadOrCreate()
+            if RemoteCommandAuthenticator.accepts(
+                presented: userInfo[RemoteCommandBridge.Key.token],
+                expected: expected
+            ) {
+                return true
+            }
+        } catch {
+            fputs("Caff remote command token is unavailable.\n", stderr)
+            return false
+        }
+        fputs("Caff rejected a remote command with a missing or invalid token.\n", stderr)
+        return false
     }
 
     private func applyRemoteCommand(userInfo: [String: String]) throws {
