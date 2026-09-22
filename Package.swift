@@ -16,7 +16,8 @@ let package = Package(
         .target(
             name: "CaffCore",
             linkerSettings: [
-                .linkedFramework("IOKit")
+                .linkedFramework("IOKit"),
+                .linkedFramework("Security")
             ]
         ),
         .executableTarget(

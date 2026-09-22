@@ -151,11 +151,11 @@ Caff persists menu bar density and launch behavior. The menu bar can show icon-o
 
 ## CLI and URL Control
 
-The same executable accepts `start`, `stop`, `status`, `agent-touch`, `install-hooks`, and `remove-hooks` commands. `start` supports `--minutes`, `--reason`, `--display-awake`, and `--source`; `status` prints the latest Caff app snapshot, including source, requested assertions, reason, timestamps, display-awake state, agent cooldown state, the last received agent-touch event, and errors. The app bundle registers URL commands for equivalent control:
+The same executable accepts `start`, `stop`, `status`, `agent-touch`, `install-hooks`, and `remove-hooks` commands. `start` supports `--minutes`, `--reason`, `--display-awake`, and `--source`; `status` prints the latest Caff app snapshot, including source, requested assertions, reason, timestamps, display-awake state, agent cooldown state, the last received agent-touch event, and errors. CLI commands attach the per-install token automatically. URL commands need the same token from `~/Library/Application Support/Caff/remote-command.token` as a `token` query item. Delete that file to mint a new one; the app and CLI then share the replacement.
 
-- `caff://start?minutes=30&reason=agent`
-- `caff://stop`
-- `caff://agent-touch?source=codex&cooldownSeconds=1800`
+- `caff://start?minutes=30&reason=agent&token=<token>`
+- `caff://stop?token=<token>`
+- `caff://agent-touch?source=codex&cooldownSeconds=1800&token=<token>`
 
 For long-running interactive agent CLIs, `agent-touch` refreshes a last-activity cooldown without relying on the `codex` or `claude` process exiting:
 
