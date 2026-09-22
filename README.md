@@ -105,7 +105,7 @@ When Caff is running, look for `CAFF` in the macOS menu bar.
 | Keep the Mac awake for a known amount of time | Manual buttons: `30 Minutes`, `1 Hour`, `4 Hours` |
 | Keep the display on too | Turn on `Keep display awake` before starting |
 | Keep awake while Codex or Claude activity is happening | `agent-touch` hooks |
-| Start, stop, or inspect Caff from scripts | CLI or `caff://` URLs |
+| Start, stop, or inspect Caff from scripts | CLI |
 
 Start with manual mode. Turn on agent hooks when manual sessions are not enough for interactive Codex or Claude work.
 
@@ -151,11 +151,7 @@ Caff persists menu bar density and launch behavior. The menu bar can show icon-o
 
 ## CLI and URL Control
 
-The same executable accepts `start`, `stop`, `status`, `agent-touch`, `install-hooks`, and `remove-hooks` commands. `start` supports `--minutes`, `--reason`, `--display-awake`, and `--source`; `status` prints the latest Caff app snapshot, including source, requested assertions, reason, timestamps, display-awake state, agent cooldown state, the last received agent-touch event, and errors. CLI commands attach the per-install token automatically. URL commands need the same token from `~/Library/Application Support/Caff/remote-command.token` as a `token` query item. Delete that file to mint a new one; the app and CLI then share the replacement.
-
-- `caff://start?minutes=30&reason=agent&token=<token>`
-- `caff://stop?token=<token>`
-- `caff://agent-touch?source=codex&cooldownSeconds=1800&token=<token>`
+The same executable accepts `start`, `stop`, `status`, `agent-touch`, `install-hooks`, and `remove-hooks` commands. `start` supports `--minutes`, `--reason`, `--display-awake`, and `--source`; `status` prints the latest Caff app snapshot, including source, requested assertions, reason, timestamps, display-awake state, agent cooldown state, the last received agent-touch event, and errors. The CLI talks to the running app over XPC. The app accepts that connection only when the peer matches this Caff binary's designated code-signing requirement. `caff://` links are ignored. Launching this executable is the supported way for a hook or script to send a command.
 
 For long-running interactive agent CLIs, `agent-touch` refreshes a last-activity cooldown without relying on the `codex` or `claude` process exiting:
 
