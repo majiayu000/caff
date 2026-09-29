@@ -1,6 +1,26 @@
 import AppKit
 import CaffCore
 
+func historyStatusLine(
+    entries: [SessionHistoryEntry],
+    failureStatus: SessionHistoryFailureStatus,
+    persistsUpdates: Bool,
+    text: AppText
+) -> String {
+    if !persistsUpdates {
+        return text.localizedStatus(AppText.historyUnreadableFileLeftInPlace)
+    }
+
+    guard let latest = entries.first else {
+        if failureStatus == .movedAside {
+            return text.localizedStatus(AppText.historyUnreadableFileMovedAside)
+        }
+        return text.localizedStatus("History: Empty")
+    }
+
+    return text.label(text.history, text.localizedStatus(latest.summary))
+}
+
 extension AppDelegate {
     func scheduleTimer() {
         updateTimer?.invalidate()
@@ -40,11 +60,12 @@ extension AppDelegate {
     }
 
     func historyMenuSummary() -> String {
-        guard let latest = history.first else {
-            return text.localizedStatus("History: Empty")
-        }
-
-        return text.label(text.history, text.localizedStatus(latest.summary))
+        historyStatusLine(
+            entries: history,
+            failureStatus: historyFailureStatus,
+            persistsUpdates: historyStore.persistsUpdates,
+            text: text
+        )
     }
 
     func sendNotification(title: String, body: String) {

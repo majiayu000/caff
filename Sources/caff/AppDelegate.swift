@@ -39,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var controlWindow: NSWindow?
     var activeSession: WakeSession?
     var history: [SessionHistoryEntry] = []
+    var historyFailureStatus: SessionHistoryFailureStatus = .none
     var settings = AppSettings.standard
     var lastErrorMessage: String?
     var updateTimer: Timer?
@@ -59,8 +60,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         registerRemoteControlHandlers()
         settings = settingsStore.load()
+        let loadedHistory = historyStore.load()
+        history = loadedHistory.entries
+        historyFailureStatus = loadedHistory.failureStatus
         applyLanguageMode(rebuildControlWindow: false)
-        history = historyStore.load()
         statusItem.button?.title = "CAFF"
         rebuildMenu()
         updateStatusTitle()
@@ -164,7 +167,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func clearHistory() {
+        guard historyStore.persistsUpdates else {
+            return
+        }
         history = []
+        historyFailureStatus = .none
         historyStore.clear()
         rebuildMenu()
         updateStatusTitle()
