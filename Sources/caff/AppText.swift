@@ -199,6 +199,9 @@ struct AppText {
         return notes.map(localizedStatus).joined(separator: "，")
     }
 
+    static let historyUnreadableFileMovedAside = "History: Unreadable file moved aside"
+    static let historyUnreadableFileLeftInPlace = "History: Unreadable file left in place"
+
     func localizedStatus(_ value: String) -> String {
         guard language == .simplifiedChinese else {
             return value
@@ -210,6 +213,8 @@ struct AppText {
             ("sleep allowed in", "允许休眠倒计时"),
             ("Last touch", "最近触发"),
             ("History: Empty", "历史记录：空"),
+            (Self.historyUnreadableFileMovedAside, "历史记录：无法读取的文件已移到一旁"),
+            (Self.historyUnreadableFileLeftInPlace, "历史记录：无法读取的文件仍留在原处"),
             ("History", "历史记录"),
             ("Safety", "安全策略"),
             ("Running", "运行中"),
