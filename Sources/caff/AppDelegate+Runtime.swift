@@ -41,6 +41,23 @@ extension AppDelegate {
         updateTimer = nil
     }
 
+    func reconcileSessionAfterAssertionFailure(_ session: WakeSession, error: Error) {
+        if powerAssertions.isRunning {
+            keepDisplayAwake = powerAssertions.activeAssertions.contains(.displaySleep)
+            activeSession = session.updatingAssertions(
+                powerAssertions.activeAssertions,
+                keepDisplayAwake: keepDisplayAwake,
+                errorMessage: session.errorMessage
+            )
+            scheduleTimer()
+        } else {
+            if let activeSession {
+                recordHistory(for: activeSession, result: .error, errorMessage: String(describing: error))
+            }
+            clearSessionState()
+        }
+    }
+
     func stopCurrentSessionFromUI() {
         cancelAgentActivityCooldown()
         stopSession(result: .stopped)

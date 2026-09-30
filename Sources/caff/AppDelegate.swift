@@ -1,10 +1,20 @@
 import AppKit
 import CaffCore
 
+private struct DisplayAssertionUpdateError: Error, CustomStringConvertible {
+    let updateFailure: Error
+    let restoreFailure: Error
+
+    var description: String {
+        "\(updateFailure); restoring previous assertions also failed: \(restoreFailure)"
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var text = AppText.current
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    let powerAssertions = PowerAssertionController()
+    let powerAssertions: PowerAssertionController
+    let currentPowerSource: () -> PowerSourceState
     let windowStatusLabel = NSTextField(labelWithString: AppText.current.off)
     let heroEyebrowLabel = NSTextField(labelWithString: AppText.current.readyStandby)
     let heroTitleLabel = NSTextField(labelWithString: AppText.current.readyTitle)
@@ -31,10 +41,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let historyStatusLabel = NSTextField(labelWithString: AppText.current.localizedStatus("History: Empty"))
     let stopButton = NSButton(title: AppText.current.stop, target: nil, action: nil)
     let clearHistoryButton = NSButton(title: AppText.current.clearHistory, target: nil, action: nil)
-    let historyStore = SessionHistoryStore()
+    let historyStore: SessionHistoryStore
     let notificationBridge = NotificationBridge()
     private let settingsStore = AppSettingsStore()
-    let statusStore = CaffStatusStore()
+    let statusStore: CaffStatusStore
     var startButtons: [NSButton] = []
     var controlWindow: NSWindow?
     var activeSession: WakeSession?
@@ -55,6 +65,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var presentsErrorsRemotely = false
     var remoteCommandServer: RemoteCommandServer?
     var remoteErrorPresentation = RemoteErrorPresentation()
+
+    init(
+        powerAssertions: PowerAssertionController = PowerAssertionController(),
+        currentPowerSource: @escaping () -> PowerSourceState = PowerSourceMonitor.current,
+        historyStore: SessionHistoryStore = SessionHistoryStore(),
+        statusStore: CaffStatusStore = CaffStatusStore()
+    ) {
+        self.powerAssertions = powerAssertions
+        self.currentPowerSource = currentPowerSource
+        self.historyStore = historyStore
+        self.statusStore = statusStore
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -141,9 +164,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
                 lastErrorMessage = nil
             } catch {
-                keepDisplayAwake.toggle()
-                clearSessionState()
-                showError(error)
+                keepDisplayAwake = activeSession.keepDisplayAwake
+                var updateError = error
+                if powerAssertions.activeAssertions != activeSession.activeAssertions {
+                    do {
+                        try powerAssertions.start(options: options(for: activeSession))
+                    } catch {
+                        updateError = DisplayAssertionUpdateError(updateFailure: updateError, restoreFailure: error)
+                    }
+                }
+                reconcileSessionAfterAssertionFailure(activeSession, error: updateError)
+                showError(updateError)
             }
         }
 
@@ -297,12 +328,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ) -> Bool {
         let sessionReason = reason ?? "Caff is keeping this Mac awake"
         let startedAt = Date()
-        let powerSource = PowerSourceMonitor.current()
+        let powerSource = currentPowerSource()
         let safetyPolicy = currentSafetyPolicy()
         let sessionOptions = options(for: duration, source: source, reason: sessionReason)
 
         do {
             try safetyPolicy.validate(duration: duration, powerSource: powerSource)
+        } catch {
+            showError(error)
+            return false
+        }
+
+        do {
             try powerAssertions.start(options: sessionOptions)
             activeSession = WakeSession(
                 options: sessionOptions,
@@ -317,6 +354,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             updateStatusTitle()
             return true
         } catch {
+            let failedSession: WakeSession
+            if case .releaseFailed = error as? PowerAssertionError, let activeSession {
+                failedSession = activeSession
+            } else {
+                failedSession = WakeSession(
+                    options: sessionOptions,
+                    startedAt: startedAt,
+                    activeAssertions: powerAssertions.activeAssertions,
+                    endDate: safetyPolicy.effectiveEndDate(for: duration, startedAt: startedAt)
+                )
+                if powerAssertions.isRunning, let activeSession {
+                    recordHistory(for: activeSession, result: .error, errorMessage: String(describing: error))
+                }
+            }
+            reconcileSessionAfterAssertionFailure(failedSession, error: error)
             showError(error)
             return false
         }
@@ -342,6 +394,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             rebuildMenu()
             updateStatusTitle()
         } catch {
+            if let sessionToRecord {
+                reconcileSessionAfterAssertionFailure(sessionToRecord, error: error)
+            }
             showError(error)
         }
     }
@@ -376,7 +431,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             try currentSafetyPolicy().validate(
                 duration: activeSession.duration,
-                powerSource: PowerSourceMonitor.current()
+                powerSource: currentPowerSource()
             )
             return true
         } catch {
@@ -388,7 +443,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func safetyNotes(for activeSession: WakeSession) -> [String] {
         currentSafetyPolicy().sessionNotes(
             for: activeSession.duration,
-            powerSource: PowerSourceMonitor.current()
+            powerSource: currentPowerSource()
         )
     }
 
@@ -401,6 +456,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             clearSessionState()
         } catch {
+            if let activeSession {
+                reconcileSessionAfterAssertionFailure(activeSession, error: error)
+            }
             showError(error)
             return
         }

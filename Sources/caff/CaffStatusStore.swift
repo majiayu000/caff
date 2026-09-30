@@ -66,12 +66,16 @@ struct CaffStatusSnapshot: Codable, Equatable {
 final class CaffStatusStore {
     private let fileURL: URL
 
-    init() {
+    convenience init() {
         let supportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
             .first?
             .appendingPathComponent("Caff", isDirectory: true)
             ?? URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("Caff", isDirectory: true)
-        self.fileURL = supportURL.appendingPathComponent("status.json")
+        self.init(fileURL: supportURL.appendingPathComponent("status.json"))
+    }
+
+    init(fileURL: URL) {
+        self.fileURL = fileURL
     }
 
     func read() -> CaffStatusSnapshot? {
