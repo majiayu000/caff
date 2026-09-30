@@ -113,8 +113,25 @@ import Testing
 }
 
 @Test func remoteControlCooldownParsesPositiveInteger() throws {
+    #expect(try RemoteControlParser.cooldownSeconds("1") == 1)
     #expect(try RemoteControlParser.cooldownSeconds("60") == 60)
     #expect(try RemoteControlParser.cooldownSeconds("1800") == 1_800)
+    #expect(try RemoteControlParser.cooldownSeconds("3599") == 3_599)
+}
+
+@Test func remoteControlCooldownParsesMaximumAllowedValue() throws {
+    let maxSeconds = SafetyPolicy.standard.maximumSessionMinutes * 60
+    #expect(try RemoteControlParser.cooldownSeconds("\(maxSeconds)") == maxSeconds)
+}
+
+@Test func remoteControlCooldownRejectsAboveMaximumSessionSeconds() {
+    let maxSeconds = SafetyPolicy.standard.maximumSessionMinutes * 60
+    for seconds in [maxSeconds + 1, 20_000, Int.max - 1_024, Int.max] {
+        let value = "\(seconds)"
+        #expect(throws: RemoteControlError.invalidCooldownSeconds(value)) {
+            _ = try RemoteControlParser.cooldownSeconds(value)
+        }
+    }
 }
 
 @Test func remoteControlCooldownRejectsZero() {
