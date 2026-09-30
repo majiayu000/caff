@@ -160,6 +160,7 @@ private struct RemoteCommandFixture {
     let app: AppDelegate
 
     init(powerSource: PowerSourceState = .acPower) throws {
+        _ = NSApplication.shared
         directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("RemoteCommandResult-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
