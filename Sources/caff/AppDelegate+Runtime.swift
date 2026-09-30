@@ -47,7 +47,7 @@ extension AppDelegate {
             activeSession = session.updatingAssertions(
                 powerAssertions.activeAssertions,
                 keepDisplayAwake: keepDisplayAwake,
-                errorMessage: session.errorMessage
+                errorMessage: String(describing: error)
             )
             scheduleTimer()
         } else {

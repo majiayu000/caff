@@ -120,6 +120,8 @@ struct AssertionSessionFailureTests {
         #expect(fixture.app.activeSession?.reason == "failed start")
         #expect(fixture.app.activeSession?.duration == .thirtyMinutes)
         #expect(fixture.app.lastErrorMessage?.contains("cleanup also failed") == true)
+        #expect(fixture.app.activeSession?.errorMessage == fixture.app.lastErrorMessage)
+        #expect(fixture.app.activeSession?.compactStatus() == "error")
         #expect(fixture.app.history.isEmpty)
         fixture.app.stopSession(result: .stopped)
         #expect(fixture.app.activeSession == nil)
@@ -232,6 +234,42 @@ struct AssertionSessionFailureTests {
         fixture.expectRunning([.idleSystemSleep], original: original)
         #expect(fixture.app.history.isEmpty)
         #expect(fixture.app.lastErrorMessage?.contains("Failed to release") == true)
+    }
+
+    @Test
+    func retainedFailureRemainsVisibleUntilSuccessfulDisplayUpdate() throws {
+        let fixture = try AssertionSessionFixture()
+        defer { fixture.cleanUp() }
+        fixture.start()
+        fixture.backend.releaseStatuses[.idleSystemSleep] = [kIOReturnNotResponding]
+
+        fixture.app.toggleDisplayAwake()
+
+        let error = try #require(fixture.app.lastErrorMessage)
+        #expect(fixture.app.activeSession?.errorMessage == error)
+        #expect(fixture.app.activeSession?.compactStatus() == "error")
+        #expect(fixture.app.errorProofLabel.stringValue.contains(error))
+        fixture.app.toggleDisplayAwake()
+        #expect(fixture.app.activeSession?.errorMessage == nil)
+        #expect(fixture.app.lastErrorMessage == nil)
+        #expect(fixture.app.errorProofLabel.stringValue.isEmpty)
+    }
+
+    @Test
+    func retainedAgentFailureSurvivesActivityRefresh() throws {
+        let fixture = try AssertionSessionFixture()
+        defer { fixture.cleanUp() }
+        fixture.app.touchAgentActivity(source: "Codex")
+        fixture.backend.releaseStatuses[.idleSystemSleep] = [kIOReturnNotResponding]
+
+        fixture.app.toggleDisplayAwake()
+        let error = try #require(fixture.app.lastErrorMessage)
+        fixture.app.pollAgentActivity()
+
+        #expect(fixture.app.activeSession?.errorMessage == error)
+        #expect(fixture.app.activeSession?.compactStatus() == "error")
+        #expect(fixture.app.lastErrorMessage == error)
+        #expect(fixture.app.errorProofLabel.stringValue.contains(error))
     }
 
     @Test
