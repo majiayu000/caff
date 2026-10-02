@@ -68,6 +68,7 @@ rm -f "$zip_path" "$checksum_path"
 (
     cd "$dist_dir"
     ditto -c -k --sequesterRsrc --keepParent "Caff.app" "$(basename "$zip_path")"
+    zip -j "$(basename "$zip_path")" "$root_dir/LICENSE" >/dev/null
     shasum -a 256 "$(basename "$zip_path")" > "$(basename "$checksum_path")"
 )
 
