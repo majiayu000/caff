@@ -7,7 +7,7 @@
 
 Caff is a small macOS menu bar app that keeps the machine awake while long-running agent tasks are active. It can be driven manually, by agent hook events, or by CLI/URL commands.
 
-[Install](#install) · [Quick Start](#quick-start) · [Why Caff?](#why-caff) · [Star on GitHub](https://github.com/majiayu000/caff)
+[Install](#install) · [Quick Start](#quick-start) · [Agent task guide](docs/guides/keep-mac-awake-for-agent-tasks.md) · [Why Caff?](#why-caff)
 
 ```bash
 brew install --cask majiayu000/caff/caff
