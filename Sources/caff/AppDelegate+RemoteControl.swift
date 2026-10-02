@@ -45,8 +45,7 @@ extension AppDelegate {
         var accepted = false
         withRemoteErrorPresentation {
             do {
-                try applyRemoteCommand(userInfo: userInfo)
-                accepted = true
+                accepted = try applyRemoteCommand(userInfo: userInfo)
             } catch {
                 showError(error)
             }
@@ -54,37 +53,37 @@ extension AppDelegate {
         return accepted
     }
 
-    private func applyRemoteCommand(userInfo: [String: String]) throws {
+    private func applyRemoteCommand(userInfo: [String: String]) throws -> Bool {
         let action = userInfo[RemoteCommandBridge.Key.action] ?? ""
         switch action {
         case "start":
-            try startRemoteSession(userInfo: userInfo)
+            return try startRemoteSession(userInfo: userInfo)
         case "stop":
             cancelAgentActivityCooldown()
-            stopSession(result: .stopped)
+            return stopSession(result: .stopped)
         case "agent-touch":
-            try touchRemoteAgentActivity(userInfo: userInfo)
+            return try touchRemoteAgentActivity(userInfo: userInfo)
         default:
             throw RemoteCommandApplyError.unknownAction(action)
         }
     }
 
-    private func startRemoteSession(userInfo: [String: String]) throws {
+    private func startRemoteSession(userInfo: [String: String]) throws -> Bool {
         guard activeSession == nil else {
             throw RemoteCommandApplyError.sessionAlreadyRunning(activeSession?.reason ?? "Caff session")
         }
         let duration = try RemoteControlParser.duration(minutes: userInfo[RemoteCommandBridge.Key.minutes])
         let source = try RemoteControlParser.source(userInfo[RemoteCommandBridge.Key.source])
-        keepDisplayAwake = RemoteControlParser.bool(userInfo[RemoteCommandBridge.Key.displayAwake])
+        let displayAwake = RemoteControlParser.bool(userInfo[RemoteCommandBridge.Key.displayAwake])
         let reason = userInfo[RemoteCommandBridge.Key.reason] ?? text.choose(en: "Caff remote start", zh: "Caff 远程启动")
-        _ = startSession(duration: duration, source: source, reason: reason)
+        return startSession(duration: duration, source: source, reason: reason, displayAwake: displayAwake)
     }
 
-    private func touchRemoteAgentActivity(userInfo: [String: String]) throws {
+    private func touchRemoteAgentActivity(userInfo: [String: String]) throws -> Bool {
         let source = userInfo[RemoteCommandBridge.Key.agentSource] ?? userInfo[RemoteCommandBridge.Key.source]
         let cooldownSeconds = try RemoteControlParser.cooldownSeconds(
             userInfo[RemoteCommandBridge.Key.cooldownSeconds]
         )
-        touchAgentActivity(source: source, cooldownSeconds: cooldownSeconds)
+        return touchAgentActivity(source: source, cooldownSeconds: cooldownSeconds)
     }
 }
