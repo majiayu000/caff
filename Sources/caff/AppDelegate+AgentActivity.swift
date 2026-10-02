@@ -2,7 +2,8 @@ import Foundation
 import CaffCore
 
 extension AppDelegate {
-    func touchAgentActivity(source: String?, cooldownSeconds: Int = AgentActivityCooldown.defaultCooldownSeconds) {
+    @discardableResult
+    func touchAgentActivity(source: String?, cooldownSeconds: Int = AgentActivityCooldown.defaultCooldownSeconds) -> Bool {
         let nextState = AgentActivityCooldown.touch(
             source: source,
             cooldownSeconds: cooldownSeconds
@@ -10,9 +11,10 @@ extension AppDelegate {
         agentActivityState = nextState
         lastAgentTouch = AgentActivityTouch(state: nextState)
         scheduleAgentActivityTimer()
-        syncAgentActivitySession()
+        let accepted = syncAgentActivitySession()
         rebuildMenu()
         updateStatusTitle()
+        return accepted
     }
 
     func cancelAgentActivityCooldown() {
@@ -73,22 +75,23 @@ extension AppDelegate {
         RunLoop.main.add(timer, forMode: .common)
     }
 
-    private func syncAgentActivitySession() {
+    @discardableResult
+    private func syncAgentActivitySession() -> Bool {
         let evaluation = AgentActivityCooldown.evaluate(state: agentActivityState)
         agentActivitySummary = evaluation.summary
 
         guard evaluation.isKeepingAwake else {
             cancelAgentActivityCooldown()
             if activeSession?.source == .agent {
-                stopSession(result: .stopped)
+                return stopSession(result: .stopped)
             }
-            return
+            return true
         }
 
         guard let state = agentActivityState,
               let cooldownUntil = evaluation.cooldownUntil else {
             cancelAgentActivityCooldown()
-            return
+            return true
         }
 
         let sessionEndDate = agentActivitySessionEndDate(
@@ -98,9 +101,9 @@ extension AppDelegate {
         if sessionEndDate <= Date() {
             cancelAgentActivityCooldown()
             if activeSession?.source == .agent {
-                stopSession(result: .timedOut)
+                return stopSession(result: .timedOut)
             }
-            return
+            return true
         }
 
         if activeSession == nil {
@@ -110,19 +113,20 @@ extension AppDelegate {
                 reason: evaluation.reason
             ) else {
                 cancelAgentActivityCooldown()
-                return
+                return false
             }
         }
 
         if activeSession?.source == .agent {
-            refreshAgentActivitySession(evaluation)
+            return refreshAgentActivitySession(evaluation)
         }
+        return true
     }
 
-    private func refreshAgentActivitySession(_ evaluation: AgentActivityEvaluation) {
+    private func refreshAgentActivitySession(_ evaluation: AgentActivityEvaluation) -> Bool {
         guard let state = agentActivityState,
               let cooldownUntil = evaluation.cooldownUntil else {
-            return
+            return true
         }
 
         let options = SessionOptions(
@@ -146,9 +150,11 @@ extension AppDelegate {
                 )
             )
             lastErrorMessage = nil
+            return true
         } catch {
             cancelAgentActivityCooldown()
             showError(error)
+            return false
         }
     }
 
