@@ -43,6 +43,28 @@ import Testing
     #expect(evaluation.cooldownUntil == start.addingTimeInterval(3_500))
 }
 
+@Test func agentCooldownFailsClosedWhenRemainingSecondsCannotFitInInt() {
+    let start = Date(timeIntervalSince1970: 10_000)
+    let state = AgentActivityCooldown.touch(source: "codex", cooldownSeconds: Int.max, now: start)
+
+    let evaluation = AgentActivityCooldown.evaluate(state: state, now: start)
+
+    #expect(!evaluation.isKeepingAwake)
+    #expect(evaluation.remainingSeconds == 0)
+    #expect(evaluation.source == nil)
+    #expect(evaluation.summary == "Agent activity idle")
+}
+
+@Test func agentCooldownRoundsFractionalRemainingSecondsUp() {
+    let start = Date(timeIntervalSince1970: 10_000)
+    let state = AgentActivityCooldown.touch(source: "codex", cooldownSeconds: 90, now: start)
+
+    let evaluation = AgentActivityCooldown.evaluate(state: state, now: start.addingTimeInterval(60.25))
+
+    #expect(evaluation.isKeepingAwake)
+    #expect(evaluation.remainingSeconds == 30)
+}
+
 @Test func agentTouchReceiptKeepsLastReceivedSourceAndTime() {
     let receivedAt = Date(timeIntervalSince1970: 30_000)
     let state = AgentActivityCooldown.touch(

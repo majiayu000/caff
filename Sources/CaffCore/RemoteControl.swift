@@ -45,7 +45,8 @@ public enum RemoteControlParser {
         guard let value, !value.isEmpty else {
             return AgentActivityCooldown.defaultCooldownSeconds
         }
-        guard let seconds = Int(value), seconds > 0 else {
+        guard let seconds = Int(value), seconds > 0,
+              seconds <= SafetyPolicy.standard.maximumSessionMinutes * 60 else {
             throw RemoteControlError.invalidCooldownSeconds(value)
         }
         return seconds
