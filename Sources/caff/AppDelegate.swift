@@ -324,13 +324,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func startSession(
         duration: SessionDuration,
         source: SessionSource = .manual,
-        reason: String? = nil
+        reason: String? = nil,
+        displayAwake: Bool? = nil
     ) -> Bool {
         let sessionReason = reason ?? "Caff is keeping this Mac awake"
         let startedAt = Date()
         let powerSource = currentPowerSource()
         let safetyPolicy = currentSafetyPolicy()
-        let sessionOptions = options(for: duration, source: source, reason: sessionReason)
+        let sessionOptions = options(for: duration, source: source, reason: sessionReason, displayAwake: displayAwake)
 
         do {
             try safetyPolicy.validate(duration: duration, powerSource: powerSource)
@@ -341,6 +342,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         do {
             try powerAssertions.start(options: sessionOptions)
+            keepDisplayAwake = sessionOptions.keepDisplayAwake
             activeSession = WakeSession(
                 options: sessionOptions,
                 startedAt: startedAt,
@@ -374,10 +376,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @discardableResult
     func stopSession(
         result: SessionHistoryResult,
         errorMessage: String? = nil
-    ) {
+    ) -> Bool {
         let sessionToRecord = activeSession
         do {
             try powerAssertions.stop()
@@ -393,23 +396,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             lastErrorMessage = nil
             rebuildMenu()
             updateStatusTitle()
+            return true
         } catch {
             if let sessionToRecord {
                 reconcileSessionAfterAssertionFailure(sessionToRecord, error: error)
             }
             showError(error)
+            return false
         }
     }
 
     private func options(
         for duration: SessionDuration,
         source: SessionSource = .manual,
-        reason: String
+        reason: String,
+        displayAwake: Bool? = nil
     ) -> SessionOptions {
         SessionOptions(
             duration: duration,
             source: source,
-            keepDisplayAwake: keepDisplayAwake,
+            keepDisplayAwake: displayAwake ?? keepDisplayAwake,
             reason: reason
         )
     }

@@ -92,7 +92,7 @@ public enum AgentActivityCooldown {
         }
 
         let cooldownUntil = state.lastActivityAt.addingTimeInterval(TimeInterval(state.cooldownSeconds))
-        let remainingSeconds = max(0, Int(ceil(cooldownUntil.timeIntervalSince(now))))
+        let remainingSeconds = max(0, Int(exactly: ceil(cooldownUntil.timeIntervalSince(now))) ?? 0)
         return AgentActivityEvaluation(
             isKeepingAwake: remainingSeconds > 0,
             source: remainingSeconds > 0 ? state.source : nil,
