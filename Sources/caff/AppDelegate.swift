@@ -1,6 +1,15 @@
 import AppKit
 import CaffCore
 
+private struct DisplayAssertionUpdateError: Error, CustomStringConvertible {
+    let updateFailure: Error
+    let restoreFailure: Error
+
+    var description: String {
+        "\(updateFailure); restoring previous assertions also failed: \(restoreFailure)"
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var text = AppText.current
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -155,9 +164,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
                 lastErrorMessage = nil
             } catch {
-                keepDisplayAwake.toggle()
-                clearSessionState()
-                showError(error)
+                keepDisplayAwake = activeSession.keepDisplayAwake
+                var updateError = error
+                if powerAssertions.activeAssertions != activeSession.activeAssertions {
+                    do {
+                        try powerAssertions.start(options: options(for: activeSession))
+                    } catch {
+                        updateError = DisplayAssertionUpdateError(updateFailure: updateError, restoreFailure: error)
+                    }
+                }
+                reconcileSessionAfterAssertionFailure(activeSession, error: updateError)
+                showError(updateError)
             }
         }
 
@@ -318,6 +335,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         do {
             try safetyPolicy.validate(duration: duration, powerSource: powerSource)
+        } catch {
+            showError(error)
+            return false
+        }
+
+        do {
             try powerAssertions.start(options: sessionOptions)
             keepDisplayAwake = sessionOptions.keepDisplayAwake
             activeSession = WakeSession(
@@ -333,6 +356,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             updateStatusTitle()
             return true
         } catch {
+            let failedSession: WakeSession
+            if case .releaseFailed = error as? PowerAssertionError, let activeSession {
+                failedSession = activeSession
+            } else {
+                failedSession = WakeSession(
+                    options: sessionOptions,
+                    startedAt: startedAt,
+                    activeAssertions: powerAssertions.activeAssertions,
+                    endDate: safetyPolicy.effectiveEndDate(for: duration, startedAt: startedAt)
+                )
+                if powerAssertions.isRunning, let activeSession {
+                    recordHistory(for: activeSession, result: .error, errorMessage: String(describing: error))
+                }
+            }
+            reconcileSessionAfterAssertionFailure(failedSession, error: error)
             showError(error)
             return false
         }
@@ -360,6 +398,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             updateStatusTitle()
             return true
         } catch {
+            if let sessionToRecord {
+                reconcileSessionAfterAssertionFailure(sessionToRecord, error: error)
+            }
             showError(error)
             return false
         }
@@ -421,6 +462,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             clearSessionState()
         } catch {
+            if let activeSession {
+                reconcileSessionAfterAssertionFailure(activeSession, error: error)
+            }
             showError(error)
             return
         }

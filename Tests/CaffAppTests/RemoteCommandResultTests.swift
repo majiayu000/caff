@@ -70,7 +70,11 @@ struct RemoteCommandResultTests {
         fixture.backend.releaseStatus = kIOReturnNotResponding
 
         #expect(!fixture.app.acceptSignedRemoteCommand(["action": "stop"]))
-        #expect(fixture.app.activeSession == session)
+        #expect(fixture.app.activeSession == session.updatingAssertions(
+            session.activeAssertions,
+            keepDisplayAwake: session.keepDisplayAwake,
+            errorMessage: fixture.app.lastErrorMessage
+        ))
         #expect(fixture.app.powerAssertions.isRunning)
         #expect(fixture.app.history.isEmpty)
         #expect(fixture.app.lastErrorMessage?.contains("Failed to release") == true)
