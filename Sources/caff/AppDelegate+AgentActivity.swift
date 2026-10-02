@@ -137,19 +137,22 @@ extension AppDelegate {
         )
 
         do {
+            var assertionError = activeSession?.errorMessage
             if !powerAssertions.isRunning {
                 try powerAssertions.start(options: options)
+                assertionError = nil
             }
             activeSession = WakeSession(
                 options: options,
                 startedAt: state.lastActivityAt,
                 activeAssertions: powerAssertions.activeAssertions,
+                errorMessage: assertionError,
                 endDate: agentActivitySessionEndDate(
                     state: state,
                     cooldownUntil: cooldownUntil
                 )
             )
-            lastErrorMessage = nil
+            lastErrorMessage = assertionError
             return true
         } catch {
             cancelAgentActivityCooldown()
