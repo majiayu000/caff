@@ -1,3 +1,6 @@
+> [!IMPORTANT]
+> Consolidated into **[Fibo](https://github.com/majiayu000/fibo)** and unified Homebrew tap (`brew install --cask majiayu000/tap/caff`).
+
 # Caff
 
 [![CI](https://github.com/majiayu000/caff/actions/workflows/ci.yml/badge.svg)](https://github.com/majiayu000/caff/actions/workflows/ci.yml)
